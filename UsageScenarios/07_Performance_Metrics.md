@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Best for:** CORA.OrganizationService data-driven cache optimization and performance analysis
+**Best for:** Data-driven cache optimization and performance analysis
 
 **Features Used:**
 - ✅ Per-Entity Cache Effectiveness Tracking
@@ -11,7 +11,7 @@
 - ✅ OpenTelemetry integration
 - ✅ Prometheus/Grafana dashboards
 
-**Real-World Use Cases in CORA.OrganizationService:**
+**Real-World Use Cases:**
 - Identify which entities benefit most from caching
 - Optimize TTL values based on actual hit rates
 - Discover caching candidates (low hit rate = bad candidate)

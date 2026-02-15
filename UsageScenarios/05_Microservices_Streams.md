@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Best for:** CORA.OrganizationService in multi-service architecture requiring guaranteed cache invalidation delivery
+**Best for:** multi-service architecture requiring guaranteed cache invalidation delivery
 
 **Features Used:**
 - ✅ Redis Streams (instead of Pub/Sub)
@@ -11,10 +11,10 @@
 - ✅ Message acknowledgment
 - ✅ No message loss during downtime
 
-**Real-World Use Cases in CORA.OrganizationService:**
+**Real-World Use Cases:**
 - Company updated in OrganizationService → invalidate in ReportingService, AnalyticsService, BillingService
 - User role changed → all microservices must refresh permissions
-- Dealership transferred → update caches in OrganizationService, MapService, InventoryService
+- Dealership transferred → update caches in MapService, InventoryService
 - Critical invalidation where message loss is unacceptable
 
 **Why Streams > Pub/Sub:**
@@ -37,7 +37,7 @@ Microservices Architecture with Streams:
 -----------------------------------------
 
 ┌─────────────────────────────────────────────────────────────┐
-│              CORA.OrganizationService                       │
+│       CORA.OrganizationService (Example)                    │
 │  [Company Updated: ID=456, Name="ACME Corp"]                │
 └────────────────────┬────────────────────────────────────────┘
                      │

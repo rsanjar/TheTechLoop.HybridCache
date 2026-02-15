@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Best for:** CORA.OrganizationService APIs returning large payloads (Company with all dealerships, employees, nested data)
+**Best for:** APIs returning large payloads (Company with all dealerships, employees, nested data)
 
 **Features Used:**
 - ✅ Automatic GZip Compression (values > 1KB)
@@ -10,7 +10,7 @@
 - ✅ Reduced network bandwidth
 - ✅ Transparent compression/decompression
 
-**Real-World Use Cases in CORA.OrganizationService:**
+**Real-World Use Cases:**
 - Company full details (company + 50 dealerships + 200 employees) = 500KB → 150KB compressed
 - Dealership list with nested zipcodes, states = 200KB → 60KB compressed
 - User profile with all interests, skills = 100KB → 30KB compressed
@@ -762,7 +762,7 @@ Savings:              $35/month + 3x faster responses
 
 ---
 
-## Best Practices for CORA.OrganizationService
+## Best Practices
 
 ### ✅ DO:
 - Enable compression for all production environments
@@ -777,7 +777,7 @@ Savings:              $35/month + 3x faster responses
 - Disable compression to save CPU (minimal overhead)
 - Worry about CPU overhead (2ms for 100KB is negligible)
 
-### Compression-Worthy Endpoints in CORA.OrganizationService:
+### Compression-Worthy Endpoints in Example project:
 ```
 ✅ /api/company/{id}/full-details          (500KB → 150KB)
 ✅ /api/company/list-with-dealerships      (2MB → 600KB)
@@ -825,7 +825,7 @@ var image = File.ReadAllBytes("image.jpg");  // Don't cache
 
 ## Summary
 
-Compression in CORA.OrganizationService provides:
+Compression in APIs provides:
 - **60-80% memory savings** for large JSON payloads
 - **3x faster** network transfer for large responses
 - **Transparent** operation (no code changes)

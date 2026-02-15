@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Best for:** CORA.OrganizationService scenarios where related data must be invalidated together
+**Best for:** Scenarios where related data must be invalidated together
 
 **Features Used:**
 - ✅ Cache Tagging with Redis Sets
@@ -10,7 +10,7 @@
 - ✅ Tag-based cache management
 - ✅ O(1) tag membership queries
 
-**Real-World Use Cases in CORA.OrganizationService:**
+**Real-World Use Cases:**  
 - User logout → invalidate all user sessions + preferences + permissions
 - Company update → invalidate company + dealerships + employees
 - Role change → invalidate user permissions + menu access
@@ -18,7 +18,7 @@
 
 ---
 
-## Architecture for CORA.OrganizationService
+## Architecture
 
 ```
 User Data Structure:
@@ -46,7 +46,7 @@ All reference data        → RemoveByTagAsync("Reference")
 
 ---
 
-## Step 1: Enable Tagging in CORA.OrganizationService
+## Step 1: Enable Tagging
 
 ### appsettings.json
 ```json
@@ -780,7 +780,7 @@ Performance: O(1) tag lookup, O(N) invalidation (N = keys with tag)
 
 ---
 
-## Best Practices for CORA.OrganizationService
+## Best Practices
 
 ### ✅ DO:
 - Use hierarchical tags (User → Session → Permissions)
@@ -795,7 +795,7 @@ Performance: O(1) tag lookup, O(N) invalidation (N = keys with tag)
 - Tag every single cache entry (overhead)
 - Forget to invalidate tag sets when keys are removed
 
-### Tag Naming Conventions for CORA.OrganizationService:
+### Tag Naming Conventions:
 ```
 Generic Entity Tags:
 - "User", "Company", "Dealership", "Employee"
@@ -817,7 +817,7 @@ Temporary Tags:
 
 ## Summary
 
-Cache tagging in CORA.OrganizationService provides:
+Cache tagging provides:
 - **Single-call invalidation** for complex relationships
 - **Guaranteed consistency** (no missed keys)
 - **Hierarchical organization** (User → Company → Dealership)

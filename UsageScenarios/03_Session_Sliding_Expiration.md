@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Best for:** CORA.OrganizationService user authentication and session management
+**Best for:** User authentication and session management
 
 **Features Used:**
 - ✅ Sliding Expiration (resets on each access)
@@ -10,7 +10,7 @@
 - ✅ User session persistence
 - ✅ Shopping cart / temporary data
 
-**Real-World Use Cases in CORA.OrganizationService:**
+**Real-World Use Cases:**
 - User login sessions (expire after 30min inactivity)
 - UserProfile preferences (reset TTL on access)
 - Shopping cart data (keep alive while user active)
@@ -829,7 +829,7 @@ builder.Services.AddTheTechLoopMultiLevelCache(builder.Configuration);
 
 ## Summary
 
-Sliding expiration in CORA.OrganizationService provides:
+Sliding expiration provides:
 - **Automatic session timeout** after inactivity
 - **User-friendly experience** (stays logged in while active)
 - **No manual refresh** needed
