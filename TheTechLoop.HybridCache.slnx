@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/TheTechLoop.Cache.Tests/TheTechLoop.Cache.Tests.csproj" />
+  <Project Path="src/TheTechLoop.Cache/TheTechLoop.Cache.csproj" />
+</Solution>
