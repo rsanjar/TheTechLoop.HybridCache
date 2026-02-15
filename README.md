@@ -1,6 +1,7 @@
 # TheTechLoop.Cache
+Check out the <b>/UsageScenarios</b> folder for real-world examples of integrating TheTechLoop.Cache into microservice with CQRS and MediatR.
 
-Enterprise-grade distributed Redis caching library for .NET 9 microservices.
+Enterprise-grade distributed Redis caching library for .NET microservices.
 
 ## Features
 

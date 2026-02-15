@@ -1,4 +1,22 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/Solution Items/UsageScenarios/">
+    <File Path="UsageScenarios/00_DOCUMENTATION_STATUS.md" />
+    <File Path="UsageScenarios/01_CQRS_MultiLevel_Cache.md" />
+    <File Path="UsageScenarios/02_Cache_Tagging_Bulk_Invalidation.md" />
+    <File Path="UsageScenarios/03_Session_Sliding_Expiration.md" />
+    <File Path="UsageScenarios/04_High_Volume_Compression.md" />
+    <File Path="UsageScenarios/05_Microservices_Streams.md" />
+    <File Path="UsageScenarios/06_Reference_Data_Warming.md" />
+    <File Path="UsageScenarios/07_Performance_Metrics.md" />
+    <File Path="UsageScenarios/08_Simple_REST_API.md" />
+    <File Path="UsageScenarios/09_Read_Heavy_Memory_Only.md" />
+    <File Path="UsageScenarios/10_Write_Heavy_Invalidation.md" />
+    <File Path="UsageScenarios/CORA_INTEGRATION_STATUS.md" />
+    <File Path="UsageScenarios/Summary.md" />
+  </Folder>
   <Project Path="src/TheTechLoop.Cache.Tests/TheTechLoop.Cache.Tests.csproj" />
   <Project Path="src/TheTechLoop.Cache/TheTechLoop.Cache.csproj" />
 </Solution>
