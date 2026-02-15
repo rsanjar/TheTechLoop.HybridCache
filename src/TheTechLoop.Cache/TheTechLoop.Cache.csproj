@@ -8,7 +8,7 @@
 
 		<!-- NuGet Package Metadata -->
 		<PackageId>TheTechLoop.Cache</PackageId>
-		<Version>1.0.0</Version>
+		<Version>1.1.0</Version>
 		<Authors>TheTechLoop</Authors>
 		<Company>TheTechLoop</Company>
 		<Description>Enterprise-grade distributed Redis caching library for microservices. Features include multi-level caching (L1 Memory + L2 Redis), distributed locking, cache stampede prevention, cross-service cache invalidation via Pub/Sub, circuit breaker pattern, CQRS-optimized caching, and OpenTelemetry metrics.</Description>
@@ -20,6 +20,10 @@
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="..\..\README.md" Pack="true" PackagePath="\"/>
+	</ItemGroup>
 
 	<ItemGroup>
 		<PackageReference Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
