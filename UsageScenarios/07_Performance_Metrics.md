@@ -135,7 +135,7 @@ EntityStats {
 
 ### Program.cs
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -150,8 +150,8 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
         // Register cache meters
-        metrics.AddMeter("TheTechLoop.Cache");
-        metrics.AddMeter("TheTechLoop.Cache.Effectiveness");
+        metrics.AddMeter("TheTechLoop.HybridCache");
+        metrics.AddMeter("TheTechLoop.HybridCache.Effectiveness");
 
         // Export to Prometheus
         metrics.AddPrometheusExporter();
@@ -179,7 +179,7 @@ public record GetCompanyByIdQuery(int Id) : IRequest<Company?>, ICacheable
     public TimeSpan CacheDuration => TimeSpan.FromHours(2);
 }
 
-// CachingBehavior (in TheTechLoop.Cache) automatically:
+// CachingBehavior (in TheTechLoop.HybridCache) automatically:
 // 1. Extracts entity type from cache key: "Company"
 // 2. Records hit/miss with latency
 // 3. Tracks payload size
@@ -194,7 +194,7 @@ public record GetCompanyByIdQuery(int Id) : IRequest<Company?>, ICacheable
 ### CacheStatsController.cs
 ```csharp
 using Microsoft.AspNetCore.Mvc;
-using TheTechLoop.Cache.Metrics;
+using TheTechLoop.HybridCache.Metrics;
 
 namespace TheTechLoop.Company.API.Controllers;
 
@@ -828,7 +828,7 @@ public record GetCompanyQuery(int Id) : IRequest<Company?>, ICacheable
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
-        metrics.AddMeter("TheTechLoop.Cache.Effectiveness");  // ← Required
+        metrics.AddMeter("TheTechLoop.HybridCache.Effectiveness");  // ← Required
         metrics.AddPrometheusExporter();
     });
 

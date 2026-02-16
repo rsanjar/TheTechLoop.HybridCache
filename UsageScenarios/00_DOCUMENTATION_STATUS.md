@@ -1,4 +1,4 @@
-# TheTechLoop.Cache Usage Scenarios - Complete Documentation Status
+# TheTechLoop.HybridCache Usage Scenarios - Complete Documentation Status
 
 ## ✅ **All Scenarios Fully Documented**
 
@@ -297,7 +297,7 @@ public class InterestController : ControllerBase
 ## 📚 Documentation Files Tree
 
 ```
-TheTechLoop.Cache/
+TheTechLoop.HybridCache/
 ├── UsageScenarios/
 │   ├── README.md                                    ← Master index
 │   ├── CORA_INTEGRATION_STATUS.md                   ← Integration guide + quick examples
@@ -379,7 +379,7 @@ Each would be 20-25KB with:
 ### Option 2: Add Integration Tests
 Create test projects using your entities:
 ```
-TheTechLoop.Cache.Integration.Tests/
+TheTechLoop.HybridCache.Integration.Tests/
 ├── Scenarios/
 │   ├── CQRSIntegrationTests.cs
 │   ├── CompressionIntegrationTests.cs
@@ -399,7 +399,7 @@ TheTechLoop.Company.API/
 ### Option 4: Add Postman Collection
 API examples for each scenario:
 ```
-TheTechLoop.Cache.postman_collection.json
+TheTechLoop.HybridCache.postman_collection.json
 ├── Scenario 1: CQRS Examples
 ├── Scenario 2: Tagging Examples
 ├── Scenario 3: Session Examples

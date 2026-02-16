@@ -1,4 +1,4 @@
-# TheTechLoop.Cache
+# TheTechLoop.HybridCache
 
 Enterprise-grade distributed Redis caching library for .NET microservices with production-ready features for high-performance, scalable applications.
 
@@ -50,13 +50,13 @@ Enterprise-grade distributed Redis caching library for .NET microservices with p
 ## 📦 Installation
 
 ```bash
-dotnet add package TheTechLoop.Cache
+dotnet add package TheTechLoop.HybridCache
 ```
 
 Or via project reference:
 
 ```xml
-<ProjectReference Include="..\TheTechLoop.Cache\TheTechLoop.Cache.csproj" />
+<ProjectReference Include="..\TheTechLoop.HybridCache\TheTechLoop.HybridCache.csproj" />
 ```
 
 **Requirements:**
@@ -137,7 +137,7 @@ builder.Services.AddTheTechLoopMultiLevelCache(builder.Configuration);
 
 ## 📋 Usage Scenarios
 
-TheTechLoop.Cache supports 10 comprehensive usage scenarios. Visit the `/UsageScenarios` folder for detailed documentation with complete code examples.
+TheTechLoop.HybridCache supports 10 comprehensive usage scenarios. Visit the `/UsageScenarios` folder for detailed documentation with complete code examples.
 
 ### Quick Selection Guide
 
@@ -643,7 +643,7 @@ All metrics are recorded automatically. No manual instrumentation needed.
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
-        metrics.AddMeter("TheTechLoop.Cache");
+        metrics.AddMeter("TheTechLoop.HybridCache");
         metrics.AddPrometheusExporter();
     });
 
@@ -653,9 +653,9 @@ app.MapPrometheusScrapingEndpoint("/metrics");
 ### CLI — dotnet-counters
 
 ```bash
-dotnet counters monitor --process-id <PID> --counters TheTechLoop.Cache
+dotnet counters monitor --process-id <PID> --counters TheTechLoop.HybridCache
 
-[TheTechLoop.Cache]
+[TheTechLoop.HybridCache]
     cache.hits (Count / 1 sec)           12
     cache.misses (Count / 1 sec)          3
     cache.duration (ms) P50             0.45
@@ -715,7 +715,7 @@ WRITE PATH (Command)
 ## 🗂️ Project Structure
 
 ```
-TheTechLoop.Cache/
+TheTechLoop.HybridCache/
 ├── Abstractions/
 │   ├── ICacheable.cs                       # Marker for auto-cached queries
 │   ├── ICacheInvalidatable.cs              # Marker for auto-invalidating commands
@@ -750,7 +750,7 @@ TheTechLoop.Cache/
 │   ├── ICacheWarmupStrategy.cs            # Warmup strategy contract
 │   └── CacheWarmupService.cs              # Background warmup service
 ├── README.md
-└── TheTechLoop.Cache.csproj
+└── TheTechLoop.HybridCache.csproj
 ```
 
 ---

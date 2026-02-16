@@ -82,7 +82,7 @@ Key Characteristics:
 ### Step 1: Install NuGet Packages
 
 ```bash
-dotnet add package TheTechLoop.Cache
+dotnet add package TheTechLoop.HybridCache
 dotnet add package StackExchange.Redis
 ```
 
@@ -121,7 +121,7 @@ dotnet add package StackExchange.Redis
   
   "Logging": {
     "LogLevel": {
-      "TheTechLoop.Cache": "Information"
+      "TheTechLoop.HybridCache": "Information"
     }
   }
 }
@@ -143,7 +143,7 @@ dotnet add package StackExchange.Redis
 ### Step 3: Service Registration (Program.cs)
 
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -181,7 +181,7 @@ app.Run();
 
 ```csharp
 using Microsoft.AspNetCore.Mvc;
-using TheTechLoop.Cache.Abstractions;
+using TheTechLoop.HybridCache.Abstractions;
 
 namespace RealTimeApp.Controllers;
 
@@ -1135,7 +1135,7 @@ var cacheKey = $"product:{id}";
 
 ## 📚 Additional Resources
 
-- [TheTechLoop.Cache README](../README.md)
+- [TheTechLoop.HybridCache README](../README.md)
 - [Redis Streams Documentation](https://redis.io/docs/data-types/streams/)
 - [Cache Invalidation Strategies](https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside)
 - [Eventual Consistency Patterns](https://learn.microsoft.com/en-us/azure/architecture/patterns/eventual-consistency)

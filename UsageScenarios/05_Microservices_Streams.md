@@ -116,7 +116,7 @@ If one crashes → unacked messages go to others
 
 ### Program.cs (All Microservices)
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -140,9 +140,9 @@ app.Run();
 
 ### CompanyController.cs (Publishes Invalidation Events)
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Streams;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Streams;
+using TheTechLoop.HybridCache.Keys;
 using TheTechLoop.Company.Service;
 using TheTechLoop.Company.DTO.Models;
 
@@ -265,7 +265,7 @@ public class CompanyController : ControllerBase
 // Registered via: builder.Services.AddTheTechLoopCacheInvalidation(configuration);
 
 // The consumer is built into the cache library:
-// TheTechLoop.Cache\Streams\CacheInvalidationStreamConsumer.cs
+// TheTechLoop.HybridCache\Streams\CacheInvalidationStreamConsumer.cs
 
 // It automatically:
 // 1. Joins consumer group "cache-consumers"
@@ -279,8 +279,8 @@ public class CompanyController : ControllerBase
 
 ### ReportingController.cs (Uses Cached Data)
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 
 [ApiController]
 [Route("api/[controller]")]

@@ -1,4 +1,4 @@
-# TheTechLoop.Cache Usage Scenarios - CORA.OrganizationService Integration
+# TheTechLoop.HybridCache Usage Scenarios - CORA.OrganizationService Integration
 
 ## ✅ Documentation Status
 
@@ -64,7 +64,7 @@ Based on your open files, your project uses:
 
 ### Current Cache Implementation
 ```
-✅ TheTechLoop.Cache library integrated
+✅ TheTechLoop.HybridCache library integrated
 ✅ CacheKeyBuilder in use
 ✅ RedisCacheService configured
 ✅ MediatR behaviors (CachingBehavior, CacheInvalidationBehavior)
