@@ -2,8 +2,9 @@ using MediatR;
 using Microsoft.Extensions.Logging;
 using TheTechLoop.Cache.Abstractions;
 using TheTechLoop.Cache.Keys;
+using TheTechLoop.Cache.MediatR.Abstractions;
 
-namespace TheTechLoop.Cache.Behaviors;
+namespace TheTechLoop.Cache.MediatR.Behaviors;
 
 /// <summary>
 /// MediatR pipeline behavior that automatically invalidates cache entries

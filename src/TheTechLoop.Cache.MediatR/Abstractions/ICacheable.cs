@@ -1,4 +1,4 @@
-namespace TheTechLoop.Cache.Abstractions;
+namespace TheTechLoop.Cache.MediatR.Abstractions;
 
 /// <summary>
 /// Marker interface for MediatR queries that should be automatically cached
@@ -21,7 +21,7 @@ public interface ICacheable
 {
     /// <summary>
     /// The cache key for this request. Will be automatically prefixed
-    /// with the service name and version by <see cref="Keys.CacheKeyBuilder"/>.
+    /// with the service name and version by <see cref="Cache.Keys.CacheKeyBuilder"/>.
     /// <para>Example: <c>"Dealership:42"</c> → becomes <c>"company-svc:v1:Dealership:42"</c></para>
     /// </summary>
     string CacheKey { get; }

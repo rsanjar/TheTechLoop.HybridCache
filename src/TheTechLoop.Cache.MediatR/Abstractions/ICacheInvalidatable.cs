@@ -1,4 +1,4 @@
-namespace TheTechLoop.Cache.Abstractions;
+namespace TheTechLoop.Cache.MediatR.Abstractions;
 
 /// <summary>
 /// Marker interface for MediatR commands that should automatically invalidate
@@ -25,7 +25,7 @@ public interface ICacheInvalidatable
 {
     /// <summary>
     /// Exact cache keys to remove after the command succeeds.
-    /// Will be automatically prefixed by <see cref="Keys.CacheKeyBuilder"/>.
+    /// Will be automatically prefixed by <see cref="Cache.Keys.CacheKeyBuilder"/>.
     /// <para>Example: <c>["Dealership:42"]</c></para>
     /// </summary>
     IReadOnlyList<string> CacheKeysToInvalidate { get; }
@@ -33,7 +33,7 @@ public interface ICacheInvalidatable
     /// <summary>
     /// Cache key prefixes for pattern-based invalidation.
     /// All keys starting with this prefix will be removed.
-    /// Will be automatically prefixed by <see cref="Keys.CacheKeyBuilder"/>.
+    /// Will be automatically prefixed by <see cref="Cache.Keys.CacheKeyBuilder"/>.
     /// <para>Example: <c>["Dealership:Search", "Dealership:List"]</c></para>
     /// </summary>
     IReadOnlyList<string> CachePrefixesToInvalidate { get; }

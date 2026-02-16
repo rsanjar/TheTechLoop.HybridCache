@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TheTechLoop.Cache\TheTechLoop.Cache.csproj" />
+    <ProjectReference Include="..\TheTechLoop.Cache.MediatR\TheTechLoop.Cache.MediatR.csproj" />
   </ItemGroup>
 
 </Project>

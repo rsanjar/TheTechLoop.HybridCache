@@ -3,7 +3,8 @@ using MediatR;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Behaviors;
+using TheTechLoop.Cache.MediatR.Abstractions;
+using TheTechLoop.Cache.MediatR.Behaviors;
 using TheTechLoop.Cache.Keys;
 
 namespace TheTechLoop.Cache.Tests.Behaviors;

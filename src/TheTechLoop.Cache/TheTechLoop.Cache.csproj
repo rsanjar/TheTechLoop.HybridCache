@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
@@ -7,9 +7,9 @@
 		<LangVersion>14.0</LangVersion>
 
 		<!-- NuGet Package Metadata -->
-		<PackageId>TheTechLoop.Cache</PackageId>
-		<Version>1.1.2</Version>
-		<Authors>TheTechLoop</Authors>
+		<PackageId>TheTechLoop.HybridCache</PackageId>
+		<Version>1.2.0</Version>
+		<Authors>Sanjar Rahmatov</Authors>
 		<Company>TheTechLoop</Company>
 		<Description>Enterprise-grade distributed Redis caching library for microservices. Features include multi-level caching (L1 Memory + L2 Redis), distributed locking, cache stampede prevention, cross-service cache invalidation via Pub/Sub, circuit breaker pattern, CQRS-optimized caching, and OpenTelemetry metrics.</Description>
 		<PackageTags>redis;cache;distributed-cache;microservices;cqrs;pubsub;caching</PackageTags>
@@ -27,7 +27,6 @@
 
 	<ItemGroup>
 		<PackageReference Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
-		<PackageReference Include="MediatR" Version="12.5.0" />
 		<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.3" />
 		<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
 		<PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.3" />
@@ -41,4 +40,4 @@
 		<InternalsVisibleTo Include="TheTechLoop.Cache.Tests" />
 	</ItemGroup>
 
-</Project>
+	</Project>

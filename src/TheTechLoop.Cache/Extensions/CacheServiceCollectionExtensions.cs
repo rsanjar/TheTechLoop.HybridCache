@@ -1,10 +1,8 @@
-using MediatR;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Behaviors;
 using TheTechLoop.Cache.Compression;
 using TheTechLoop.Cache.Configuration;
 using TheTechLoop.Cache.Keys;
@@ -208,20 +206,4 @@ public static class CacheServiceCollectionExtensions
         return services;
     }
 
-    /// <summary>
-    /// Registers MediatR pipeline behaviors for automatic caching and cache invalidation.
-    /// <list type="bullet">
-    ///   <item><see cref="CachingBehavior{TRequest,TResponse}"/> — auto-caches queries implementing <see cref="ICacheable"/></item>
-    ///   <item><see cref="CacheInvalidationBehavior{TRequest,TResponse}"/> — auto-invalidates after commands implementing <see cref="ICacheInvalidatable"/></item>
-    /// </list>
-    /// <para>
-    /// Call this AFTER <c>AddMediatR()</c> and <c>AddTheTechLoopCache()</c>.
-    /// </para>
-    /// </summary>
-    public static IServiceCollection AddTheTechLoopCacheBehaviors(this IServiceCollection services)
-    {
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CachingBehavior<,>));
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CacheInvalidationBehavior<,>));
-        return services;
     }
-}

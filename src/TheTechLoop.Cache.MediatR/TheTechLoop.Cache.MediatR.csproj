@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<LangVersion>14.0</LangVersion>
+
+		<!-- NuGet Package Metadata -->
+		<PackageId>TheTechLoop.HybridCache.MediatR</PackageId>
+		<Version>1.2.0</Version>
+		<Authors>Sanjar Rahmatov</Authors>
+		<Company>TheTechLoop</Company>
+		<Description>MediatR pipeline behaviors for TheTechLoop.HybridCache. Provides automatic convention-based caching and cache invalidation via ICacheable and ICacheInvalidatable marker interfaces. Install this package to add MediatR pipeline behavior support to your caching layer.</Description>
+		<PackageTags>redis;cache;distributed-cache;microservices;cqrs;mediatr;pipeline-behavior;caching</PackageTags>
+		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<PackageProjectUrl>https://github.com/rsanjar/TheTechLoop.HybridCache</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/rsanjar/TheTechLoop.HybridCache</RepositoryUrl>
+		<RepositoryType>git</RepositoryType>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="MediatR" Version="12.5.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\TheTechLoop.Cache\TheTechLoop.Cache.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="TheTechLoop.Cache.Tests" />
+	</ItemGroup>
+
+</Project>
