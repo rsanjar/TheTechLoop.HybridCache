@@ -15,6 +15,7 @@
     <File Path="UsageScenarios/10_Write_Heavy_Invalidation.md" />
     <File Path="UsageScenarios/Summary.md" />
   </Folder>
-  <Project Path="src/TheTechLoop.Cache.Tests/TheTechLoop.Cache.Tests.csproj" />
-  <Project Path="src/TheTechLoop.Cache/TheTechLoop.Cache.csproj" />
+  <Project Path="src/TheTechLoop.HybridCache.MediatR/TheTechLoop.HybridCache.MediatR.csproj" />
+  <Project Path="src/TheTechLoop.HybridCache.Tests/TheTechLoop.HybridCache.Tests.csproj" />
+  <Project Path="src/TheTechLoop.HybridCache/TheTechLoop.HybridCache.csproj" />
 </Solution>
