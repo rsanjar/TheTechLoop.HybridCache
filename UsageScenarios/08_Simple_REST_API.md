@@ -20,7 +20,7 @@
 
 ### Program.cs
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -53,8 +53,8 @@ app.Run();
 ## Step 2: Controller with Direct Cache Usage
 
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 
 [ApiController]
 [Route("api/[controller]")]

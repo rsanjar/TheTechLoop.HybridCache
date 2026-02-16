@@ -1,8 +1,8 @@
-# TheTechLoop.Cache - Usage Scenarios Index
+# TheTechLoop.HybridCache - Usage Scenarios Index
 
 ## 📚 Complete List of Usage Scenarios
 
-This directory contains comprehensive documentation for all major usage scenarios of the TheTechLoop.Cache library. Each scenario includes complete setup instructions, code examples, and best practices.
+This directory contains comprehensive documentation for all major usage scenarios of the TheTechLoop.HybridCache library. Each scenario includes complete setup instructions, code examples, and best practices.
 
 ---
 

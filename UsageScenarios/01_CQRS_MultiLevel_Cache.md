@@ -76,7 +76,7 @@
 
 ### Program.cs
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -234,7 +234,7 @@ public class UnitOfWork : IUnitOfWork
 
 ### Query Contract
 ```csharp
-using TheTechLoop.Cache.Abstractions;
+using TheTechLoop.HybridCache.Abstractions;
 
 public record GetDealershipByIdQuery(int Id) : IRequest<Dealership?>, ICacheable
 {
@@ -308,7 +308,7 @@ Next Request (different instance):
 
 ### Command Contract
 ```csharp
-using TheTechLoop.Cache.Abstractions;
+using TheTechLoop.HybridCache.Abstractions;
 
 public record UpdateDealershipCommand(
     int Id,
