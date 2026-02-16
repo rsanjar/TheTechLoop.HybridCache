@@ -118,7 +118,7 @@ Timeline:
 
 ### Program.cs
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 using TheTechLoop.Company.Service.Cache;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -149,9 +149,9 @@ app.Run();
 
 ### GeoDataWarmupStrategy.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Warming;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Warming;
+using TheTechLoop.HybridCache.Keys;
 using TheTechLoop.Company.Data;
 using TheTechLoop.Company.Data.Models;
 using Microsoft.EntityFrameworkCore;
@@ -289,9 +289,9 @@ public class GeoDataWarmupStrategy : ICacheWarmupStrategy
 
 ### ConfigurationWarmupStrategy.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Warming;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Warming;
+using TheTechLoop.HybridCache.Keys;
 
 namespace TheTechLoop.Company.Service.Cache;
 
@@ -364,9 +364,9 @@ public class ConfigurationWarmupStrategy : ICacheWarmupStrategy
 
 ### CategoryWarmupStrategy.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Warming;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Warming;
+using TheTechLoop.HybridCache.Keys;
 using TheTechLoop.Company.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -430,8 +430,8 @@ public class CategoryWarmupStrategy : ICacheWarmupStrategy
 ### GeoController.cs (Instant Responses)
 ```csharp
 using Microsoft.AspNetCore.Mvc;
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 using TheTechLoop.Company.Data;
 using TheTechLoop.Company.Data.Models;
 
@@ -598,8 +598,8 @@ public class GeoController : ControllerBase
 ### CacheWarmupHealthCheck.cs
 ```csharp
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 
 namespace TheTechLoop.Company.API.HealthChecks;
 

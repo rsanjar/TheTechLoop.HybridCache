@@ -67,7 +67,7 @@ Key Characteristics:
 ### Step 1: Install NuGet Package
 
 ```bash
-dotnet add package TheTechLoop.Cache
+dotnet add package TheTechLoop.HybridCache
 ```
 
 **Note:** You only need the base package — no Redis libraries required.
@@ -97,7 +97,7 @@ dotnet add package TheTechLoop.Cache
   
   "Logging": {
     "LogLevel": {
-      "TheTechLoop.Cache": "Information"
+      "TheTechLoop.HybridCache": "Information"
     }
   }
 }
@@ -120,7 +120,7 @@ dotnet add package TheTechLoop.Cache
 ### Step 3: Service Registration (Program.cs)
 
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -160,7 +160,7 @@ app.Run();
 
 ```csharp
 using Microsoft.AspNetCore.Mvc;
-using TheTechLoop.Cache.Abstractions;
+using TheTechLoop.HybridCache.Abstractions;
 
 namespace MyApp.Controllers;
 
@@ -266,7 +266,7 @@ public class ProductsController : ControllerBase
 #### Example 2: Service Layer with Caching
 
 ```csharp
-using TheTechLoop.Cache.Abstractions;
+using TheTechLoop.HybridCache.Abstractions;
 
 public class UserService : IUserService
 {
@@ -585,7 +585,7 @@ public async Task<ExpensiveData> GetExpensiveDataAsync(CancellationToken cancell
 ```csharp
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
-using TheTechLoop.Cache.Services;
+using TheTechLoop.HybridCache.Services;
 using Xunit;
 
 public class ProductServiceTests
@@ -669,7 +669,7 @@ if (builder.Environment.IsDevelopment())
 ### View Metrics in Logs
 
 ```
-[Information] TheTechLoop.Cache.Metrics.CacheEffectivenessMetrics: 
+[Information] TheTechLoop.HybridCache.Metrics.CacheEffectivenessMetrics: 
 Cache Effectiveness Metrics:
   product:* - Hit Rate: 92.5% (370/400 requests), Avg Latency: 0.8ms
   users:* - Hit Rate: 85.3% (171/200 requests), Avg Latency: 0.5ms
@@ -881,7 +881,7 @@ app.MapHealthChecks("/health");
   "Logging": {
     "LogLevel": {
       "Default": "Information",
-      "TheTechLoop.Cache": "Debug"
+      "TheTechLoop.HybridCache": "Debug"
     }
   }
 }
@@ -948,7 +948,7 @@ app.MapHealthChecks("/health");
 
 ## 📚 Additional Resources
 
-- [TheTechLoop.Cache README](../README.md)
+- [TheTechLoop.HybridCache README](../README.md)
 - [Microsoft.Extensions.Caching.Memory Documentation](https://learn.microsoft.com/en-us/aspnet/core/performance/caching/memory)
 - [.NET Memory Cache Best Practices](https://learn.microsoft.com/en-us/dotnet/core/extensions/caching)
 

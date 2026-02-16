@@ -66,7 +66,7 @@ All reference data        → RemoveByTagAsync("Reference")
 
 ### Program.cs
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -88,9 +88,9 @@ app.Run();
 
 **UserController.cs:**
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Tagging;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Tagging;
+using TheTechLoop.HybridCache.Keys;
 
 [ApiController]
 [Route("api/[controller]")]

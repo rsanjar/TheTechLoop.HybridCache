@@ -74,7 +74,7 @@ Even if user is actively clicking
 
 ### Program.cs
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -92,8 +92,8 @@ app.Run();
 
 ### UserController.cs (Login with Session Cache)
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 using TheTechLoop.Company.Service;
 using TheTechLoop.Company.DTO.Models;
 
@@ -286,8 +286,8 @@ public class LoginRequest
 
 ### UserService.cs (Preferences Cache)
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 using TheTechLoop.Company.Data;
 
 public class UserService : IUserService
@@ -392,8 +392,8 @@ public class UpdatePreferencesRequest
 
 ### ShoppingCartService.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 
 public interface IShoppingCartService
 {
@@ -519,8 +519,8 @@ public class CartItem
 
 ### FormWizardService.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 
 public class FormWizardService
 {
@@ -592,8 +592,8 @@ public class WizardState
 
 ### UserActivityService.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 
 public class UserActivityService
 {
@@ -663,8 +663,8 @@ public class UserActivity
 
 ### SessionValidationMiddleware.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 
 public class SessionValidationMiddleware
 {

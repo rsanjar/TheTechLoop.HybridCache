@@ -83,7 +83,7 @@ Savings: 70% (3.5GB saved)
 
 ### Program.cs
 ```csharp
-using TheTechLoop.Cache.Extensions;
+using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -103,8 +103,8 @@ app.Run();
 
 ### CompanyController.cs (Large Response with Compression)
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 using TheTechLoop.Company.Service;
 using TheTechLoop.Company.DTO.Models;
 
@@ -483,8 +483,8 @@ var data = await _cache.GetAsync<CompanyFullDetails>(key);
 
 ### CacheCompressionMonitor.cs
 ```csharp
-using TheTechLoop.Cache.Abstractions;
-using TheTechLoop.Cache.Keys;
+using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Keys;
 using StackExchange.Redis;
 
 public class CacheCompressionMonitor
