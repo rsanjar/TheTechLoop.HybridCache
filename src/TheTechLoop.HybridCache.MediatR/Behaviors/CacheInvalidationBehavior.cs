@@ -16,6 +16,10 @@ namespace TheTechLoop.HybridCache.MediatR.Behaviors;
 /// (if <see cref="ICacheInvalidationPublisher"/> is registered).
 /// </para>
 /// <para>
+/// Cache invalidation is best-effort: a 5-second timeout is applied so that
+/// a Redis failure or reconnect delay never blocks the HTTP response.
+/// </para>
+/// <para>
 /// Register in DI via <c>services.AddTheTechLoopCacheBehaviors()</c>
 /// or manually via <c>cfg.AddBehavior(typeof(IPipelineBehavior&lt;,&gt;), typeof(CacheInvalidationBehavior&lt;,&gt;))</c>.
 /// </para>
@@ -25,6 +29,8 @@ namespace TheTechLoop.HybridCache.MediatR.Behaviors;
 public sealed class CacheInvalidationBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
     where TRequest : IRequest<TResponse>
 {
+    private static readonly TimeSpan InvalidationTimeout = TimeSpan.FromSeconds(5);
+
     private readonly ICacheService _cache;
     private readonly ICacheInvalidationPublisher? _publisher;
     private readonly CacheKeyBuilder _keyBuilder;
@@ -72,15 +78,21 @@ public sealed class CacheInvalidationBehavior<TRequest, TResponse> : IPipelineBe
             invalidatable.CacheKeysToInvalidate.Count,
             invalidatable.CachePrefixesToInvalidate.Count);
 
+        // Use a short timeout so a Redis reconnect delay never blocks the HTTP response.
+        // Invalidation is best-effort: a stale cache entry will expire on its own.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(InvalidationTimeout);
+        var ct = timeoutCts.Token;
+
         // Invalidate exact keys
         foreach (var key in invalidatable.CacheKeysToInvalidate)
         {
             var scopedKey = _keyBuilder.Key(key);
 
-            await _cache.RemoveAsync(scopedKey, cancellationToken);
+            await _cache.RemoveAsync(scopedKey, ct);
 
             if (_publisher is not null)
-                await _publisher.PublishAsync(scopedKey, cancellationToken);
+                await _publisher.PublishAsync(scopedKey, ct);
         }
 
         // Invalidate prefix patterns
@@ -88,10 +100,10 @@ public sealed class CacheInvalidationBehavior<TRequest, TResponse> : IPipelineBe
         {
             var scopedPrefix = _keyBuilder.Key(prefix);
 
-            await _cache.RemoveByPrefixAsync(scopedPrefix, cancellationToken);
+            await _cache.RemoveByPrefixAsync(scopedPrefix, ct);
 
             if (_publisher is not null)
-                await _publisher.PublishPrefixAsync(scopedPrefix, cancellationToken);
+                await _publisher.PublishPrefixAsync(scopedPrefix, ct);
         }
 
         return response;
