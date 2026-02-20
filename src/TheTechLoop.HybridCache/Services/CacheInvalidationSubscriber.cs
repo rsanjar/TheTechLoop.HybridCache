@@ -20,6 +20,7 @@ public class CacheInvalidationSubscriber : BackgroundService
     private readonly IMemoryCache? _memoryCache;
     private readonly ILogger<CacheInvalidationSubscriber> _logger;
     private readonly string _channel;
+    private readonly string _instanceName;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CacheInvalidationSubscriber"/> class.
@@ -41,6 +42,7 @@ public class CacheInvalidationSubscriber : BackgroundService
         _logger = logger;
         _memoryCache = memoryCache;
         _channel = config.Value.InvalidationChannel;
+        _instanceName = config.Value.InstanceName ?? string.Empty;
     }
 
     /// <summary>
@@ -121,7 +123,9 @@ public class CacheInvalidationSubscriber : BackgroundService
             if (server is null)
                 return;
 
-            var pattern = $"{prefix}*";
+            // IDistributedCache automatically prepends InstanceName when writing keys,
+            // so raw IConnectionMultiplexer SCAN must include it to match the full Redis key.
+            var pattern = $"{_instanceName}{prefix}*";
             var keys = new List<RedisKey>();
 
             await foreach (var key in server.KeysAsync(pattern: pattern).WithCancellation(ct))

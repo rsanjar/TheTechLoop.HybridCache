@@ -25,6 +25,7 @@ public class CacheInvalidationStreamConsumer : BackgroundService
     private readonly string _streamName;
     private readonly string _consumerGroup;
     private readonly string _consumerName;
+    private readonly string _instanceName;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CacheInvalidationStreamConsumer"/> class.
@@ -47,6 +48,7 @@ public class CacheInvalidationStreamConsumer : BackgroundService
         _logger = logger;
 
         var serviceName = config.Value.ServiceName ?? "default";
+        _instanceName = config.Value.InstanceName ?? string.Empty;
         _streamName = $"cache:invalidation:stream";
         _consumerGroup = $"cache-consumers";
         _consumerName = $"{serviceName}:{Environment.MachineName}:{Guid.NewGuid():N}";
@@ -178,7 +180,9 @@ public class CacheInvalidationStreamConsumer : BackgroundService
             if (server is null)
                 return;
 
-            var pattern = $"{prefix}*";
+            // IDistributedCache automatically prepends InstanceName when writing keys,
+            // so raw IConnectionMultiplexer SCAN must include it to match the full Redis key.
+            var pattern = $"{_instanceName}{prefix}*";
             var keys = new List<RedisKey>();
 
             await foreach (var key in server.KeysAsync(pattern: pattern).WithCancellation(ct))
