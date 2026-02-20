@@ -8,7 +8,7 @@
 
 		<!-- NuGet Package Metadata -->
 		<PackageId>TheTechLoop.HybridCache.MediatR</PackageId>
-		<Version>1.2.0</Version>
+		<Version>1.2.1</Version>
 		<Authors>Sanjar Rahmatov</Authors>
 		<Company>TheTechLoop</Company>
 		<Description>MediatR pipeline behaviors for TheTechLoop.HybridCache. Provides automatic convention-based caching and cache invalidation via ICacheable and ICacheInvalidatable marker interfaces. Install this package to add MediatR pipeline behavior support to your caching layer.</Description>
