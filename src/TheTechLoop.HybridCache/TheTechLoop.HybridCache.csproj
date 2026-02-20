@@ -8,7 +8,7 @@
 
 		<!-- NuGet Package Metadata -->
 		<PackageId>TheTechLoop.HybridCache</PackageId>
-		<Version>1.2.0</Version>
+		<Version>1.2.1</Version>
 		<Authors>Sanjar Rahmatov</Authors>
 		<Company>TheTechLoop</Company>
 		<Description>Enterprise-grade distributed Redis caching library for microservices. Features include multi-level caching (L1 Memory + L2 Redis), distributed locking, cache stampede prevention, cross-service cache invalidation via Pub/Sub, circuit breaker pattern, CQRS-optimized caching, and OpenTelemetry metrics.</Description>
