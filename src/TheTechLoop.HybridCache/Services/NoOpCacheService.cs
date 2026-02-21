@@ -81,9 +81,24 @@ public class NoOpCacheService : ICacheService
     public Task RefreshAsync(string key, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 
+    /// <summary>
+    /// Gets multiple cache entries.
+    /// </summary>
+    /// <param name="keys"></param>
+    /// <param name="cancellationToken"></param>
+    /// <typeparam name="T"></typeparam>
+    /// <returns></returns>
     public Task<Dictionary<string, T?>> GetManyAsync<T>(IEnumerable<string> keys, CancellationToken cancellationToken = default)
         => Task.FromResult(keys.ToDictionary(k => k, k => default(T)));
 
+    /// <summary>
+    /// Sets multiple cache entries.
+    /// </summary>
+    /// <param name="items"></param>
+    /// <param name="expiration"></param>
+    /// <param name="cancellationToken"></param>
+    /// <typeparam name="T"></typeparam>
+    /// <returns></returns>
     public Task SetManyAsync<T>(Dictionary<string, T> items, TimeSpan? expiration = null, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 }
