@@ -19,6 +19,7 @@ public sealed class CacheMetrics
     private readonly Counter<long> _errors;
     private readonly Counter<long> _evictions;
     private readonly Counter<long> _circuitBreakerBypasses;
+    private readonly Counter<long> _circuitBreakerTransitions;
     private readonly Histogram<double> _duration;
     private readonly Histogram<double> _lockWaitDuration;
     private readonly Histogram<long> _batchSize;
@@ -52,6 +53,10 @@ public sealed class CacheMetrics
         _circuitBreakerBypasses = meter.CreateCounter<long>(
             "cache.circuit_breaker.bypasses",
             description: "Number of requests that bypassed cache due to open circuit breaker");
+
+        _circuitBreakerTransitions = meter.CreateCounter<long>(
+            "cache.circuit_breaker.transitions",
+            description: "Number of circuit breaker state transitions (opened, closed, half_open)");
 
         _duration = meter.CreateHistogram<double>(
             "cache.duration",
@@ -104,30 +109,36 @@ public sealed class CacheMetrics
     public void RecordMiss(string key, double durationMs, string level = "L2")
     {
         _misses.Add(1,
-            new KeyValuePair<string, object?>("cache.key_prefix", ExtractPrefix(key)));
+            new KeyValuePair<string, object?>("cache.key_prefix", ExtractPrefix(key)),
+            new KeyValuePair<string, object?>("cache.level", level));
 
         _duration.Record(durationMs,
-            new KeyValuePair<string, object?>("cache.operation", "miss"));
+            new KeyValuePair<string, object?>("cache.operation", "miss"),
+            new KeyValuePair<string, object?>("cache.level", level));
     }
 
     /// <summary>
     /// Records a cache operation error.
     /// </summary>
     /// <param name="key"></param>
-    public void RecordError(string key)
+    /// <param name="level"></param>
+    public void RecordError(string key, string level = "L2")
     {
         _errors.Add(1,
-            new KeyValuePair<string, object?>("cache.key_prefix", ExtractPrefix(key)));
+            new KeyValuePair<string, object?>("cache.key_prefix", ExtractPrefix(key)),
+            new KeyValuePair<string, object?>("cache.level", level));
     }
 
     /// <summary>
     /// Records a cache eviction.
     /// </summary>
     /// <param name="key"></param>
-    public void RecordEviction(string key)
+    /// <param name="level"></param>
+    public void RecordEviction(string key, string level = "L2")
     {
         _evictions.Add(1,
-            new KeyValuePair<string, object?>("cache.key_prefix", ExtractPrefix(key)));
+            new KeyValuePair<string, object?>("cache.key_prefix", ExtractPrefix(key)),
+            new KeyValuePair<string, object?>("cache.level", level));
     }
 
     /// <summary>
@@ -136,6 +147,16 @@ public sealed class CacheMetrics
     public void RecordCircuitBreakerBypass()
     {
         _circuitBreakerBypasses.Add(1);
+    }
+
+    /// <summary>
+    /// Records a circuit breaker state transition for operations dashboards.
+    /// </summary>
+    /// <param name="toState">"opened", "closed", or "half_open"</param>
+    public void RecordCircuitBreakerTransition(string toState)
+    {
+        _circuitBreakerTransitions.Add(1,
+            new KeyValuePair<string, object?>("cache.circuit_breaker.state", toState));
     }
 
     /// <summary>

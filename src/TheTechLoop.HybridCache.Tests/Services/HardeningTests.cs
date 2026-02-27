@@ -500,7 +500,7 @@ public class HardeningTests
     public async Task CircuitBreaker_HighConcurrency_FailureCountConverges()
     {
         // With threshold 50, fire exactly 50 failures from 50 parallel tasks
-        var cb = new CircuitBreakerState(breakDurationSeconds: 60, failureThreshold: 50);
+        var cb = new CircuitBreakerState(breakDurationSeconds: 1, failureThreshold: 50);
 
         var tasks = Enumerable.Range(0, 50)
             .Select(_ => Task.Run(() => cb.RecordFailure()));
@@ -510,7 +510,9 @@ public class HardeningTests
         // Should be open — all 50 failures registered
         cb.IsOpen.Should().BeTrue();
 
-        // Single success should close it
+        // Wait for break duration, then success in half-open closes the circuit
+        await Task.Delay(1100);
+        _ = cb.IsOpen; // triggers half-open transition
         cb.RecordSuccess();
         cb.IsOpen.Should().BeFalse();
     }

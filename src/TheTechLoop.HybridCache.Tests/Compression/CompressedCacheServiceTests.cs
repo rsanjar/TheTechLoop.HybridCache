@@ -17,14 +17,14 @@ public class CompressedCacheServiceTests
     #region SetAsync + GetAsync round-trip
 
     [Fact]
-    public async Task SetAsync_SmallValue_StoresUncompressed()
+    public async Task SetAsync_SmallValue_StoresWithRawHeader()
     {
-        string? capturedValue = null;
+        byte[]? capturedValue = null;
 
         _innerMock
-            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<string>(),
+            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
                 It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, TimeSpan?, CancellationToken>((_, v, _, _) => capturedValue = v)
+            .Callback<string, byte[], TimeSpan?, CancellationToken>((_, v, _, _) => capturedValue = v)
             .Returns(Task.CompletedTask);
 
         var sut = new CompressedCacheService(_innerMock.Object, compressionThresholdBytes: 1024);
@@ -32,40 +32,41 @@ public class CompressedCacheServiceTests
         await sut.SetAsync("key", "small", TimeSpan.FromMinutes(5));
 
         capturedValue.Should().NotBeNull();
-        capturedValue.Should().NotStartWith("GZIP:");
+        capturedValue![0].Should().Be(0x00, "small values should have raw header (0x00)");
     }
 
     [Fact]
-    public async Task SetAsync_LargeValue_StoresCompressedWithMarker()
+    public async Task SetAsync_LargeValue_StoresWithGzipHeader()
     {
-        string? capturedValue = null;
+        byte[]? capturedValue = null;
 
         _innerMock
-            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<string>(),
+            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
                 It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, TimeSpan?, CancellationToken>((_, v, _, _) => capturedValue = v)
+            .Callback<string, byte[], TimeSpan?, CancellationToken>((_, v, _, _) => capturedValue = v)
             .Returns(Task.CompletedTask);
 
         var sut = new CompressedCacheService(_innerMock.Object, compressionThresholdBytes: 10);
 
         await sut.SetAsync("key", new string('A', 200), TimeSpan.FromMinutes(5));
 
-        capturedValue.Should().StartWith("GZIP:");
+        capturedValue.Should().NotBeNull();
+        capturedValue![0].Should().Be(0x01, "large values should have gzip header (0x01)");
     }
 
     [Fact]
     public async Task SetAndGet_SmallValue_RoundTrips()
     {
-        string? stored = null;
+        byte[]? stored = null;
 
         _innerMock
-            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<string>(),
+            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
                 It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, TimeSpan?, CancellationToken>((_, v, _, _) => stored = v)
+            .Callback<string, byte[], TimeSpan?, CancellationToken>((_, v, _, _) => stored = v)
             .Returns(Task.CompletedTask);
 
         _innerMock
-            .Setup(s => s.GetAsync<string>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.GetAsync<byte[]>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => stored);
 
         var sut = new CompressedCacheService(_innerMock.Object, compressionThresholdBytes: 1024);
@@ -79,25 +80,26 @@ public class CompressedCacheServiceTests
     [Fact]
     public async Task SetAndGet_LargeValue_CompressesAndDecompresses()
     {
-        string? stored = null;
+        byte[]? stored = null;
         var original = new string('Z', 5000);
 
         _innerMock
-            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<string>(),
+            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
                 It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, TimeSpan?, CancellationToken>((_, v, _, _) => stored = v)
+            .Callback<string, byte[], TimeSpan?, CancellationToken>((_, v, _, _) => stored = v)
             .Returns(Task.CompletedTask);
 
         _innerMock
-            .Setup(s => s.GetAsync<string>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.GetAsync<byte[]>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => stored);
 
         var sut = new CompressedCacheService(_innerMock.Object, compressionThresholdBytes: 100);
 
         await sut.SetAsync("key", original, TimeSpan.FromMinutes(5));
 
-        stored.Should().StartWith("GZIP:");
-        stored!.Length.Should().BeLessThan(original.Length, "compressed data should be smaller");
+        stored.Should().NotBeNull();
+        stored![0].Should().Be(0x01, "large values should be gzip-compressed");
+        stored.Length.Should().BeLessThan(original.Length, "compressed data should be smaller than original");
 
         var result = await sut.GetAsync<string>("key");
         result.Should().Be(original);
@@ -114,7 +116,7 @@ public class CompressedCacheServiceTests
 
         await sut.SetAsync<string?>("key", null, CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5)));
 
-        _innerMock.Verify(s => s.SetAsync(It.IsAny<string>(), It.IsAny<string>(),
+        _innerMock.Verify(s => s.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
             It.IsAny<CacheEntryOptions>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -124,7 +126,7 @@ public class CompressedCacheServiceTests
         var options = CacheEntryOptions.Absolute(TimeSpan.FromMinutes(10), "tag1");
 
         _innerMock
-            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<string>(),
+            .Setup(s => s.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
                 It.IsAny<CacheEntryOptions>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
@@ -132,7 +134,7 @@ public class CompressedCacheServiceTests
 
         await sut.SetAsync("key", "value", options);
 
-        _innerMock.Verify(s => s.SetAsync("key", It.IsAny<string>(), options,
+        _innerMock.Verify(s => s.SetAsync("key", It.IsAny<byte[]>(), options,
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -144,8 +146,8 @@ public class CompressedCacheServiceTests
     public async Task GetAsync_NullFromInner_ReturnsDefault()
     {
         _innerMock
-            .Setup(s => s.GetAsync<string>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string?)null);
+            .Setup(s => s.GetAsync<byte[]>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((byte[]?)null);
 
         var sut = new CompressedCacheService(_innerMock.Object);
 
@@ -158,8 +160,22 @@ public class CompressedCacheServiceTests
     public async Task GetAsync_EmptyFromInner_ReturnsDefault()
     {
         _innerMock
-            .Setup(s => s.GetAsync<string>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(string.Empty);
+            .Setup(s => s.GetAsync<byte[]>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<byte>());
+
+        var sut = new CompressedCacheService(_innerMock.Object);
+
+        var result = await sut.GetAsync<string>("key");
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetAsync_SingleByteFromInner_ReturnsDefault()
+    {
+        _innerMock
+            .Setup(s => s.GetAsync<byte[]>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new byte[] { 0x00 });
 
         var sut = new CompressedCacheService(_innerMock.Object);
 
@@ -175,12 +191,12 @@ public class CompressedCacheServiceTests
     [Fact]
     public async Task GetOrCreateAsync_RoundTrips()
     {
-        string? stored = null;
+        byte[]? stored = null;
 
         _innerMock
-            .Setup(s => s.GetOrCreateAsync(It.IsAny<string>(), It.IsAny<Func<Task<string>>>(),
+            .Setup(s => s.GetOrCreateAsync(It.IsAny<string>(), It.IsAny<Func<Task<byte[]>>>(),
                 It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-            .Returns(async (string _, Func<Task<string>> factory, TimeSpan _, CancellationToken _) =>
+            .Returns(async (string _, Func<Task<byte[]>> factory, TimeSpan _, CancellationToken _) =>
             {
                 stored ??= await factory();
                 return stored;
@@ -203,19 +219,19 @@ public class CompressedCacheServiceTests
     [Fact]
     public async Task SetManyAndGetMany_RoundTrips()
     {
-        var store = new Dictionary<string, string?>();
+        var store = new Dictionary<string, byte[]?>();
 
         _innerMock
-            .Setup(s => s.SetManyAsync(It.IsAny<Dictionary<string, string>>(),
+            .Setup(s => s.SetManyAsync(It.IsAny<Dictionary<string, byte[]>>(),
                 It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
-            .Callback<Dictionary<string, string>, TimeSpan?, CancellationToken>((items, _, _) =>
+            .Callback<Dictionary<string, byte[]>, TimeSpan?, CancellationToken>((items, _, _) =>
             {
                 foreach (var kvp in items) store[kvp.Key] = kvp.Value;
             })
             .Returns(Task.CompletedTask);
 
         _innerMock
-            .Setup(s => s.GetManyAsync<string>(It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.GetManyAsync<byte[]>(It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((IEnumerable<string> keys, CancellationToken _) =>
                 keys.ToDictionary(k => k, k => store.GetValueOrDefault(k)));
 
@@ -238,8 +254,8 @@ public class CompressedCacheServiceTests
     public async Task GetManyAsync_WithNullValues_ReturnsDefaults()
     {
         _innerMock
-            .Setup(s => s.GetManyAsync<string>(It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Dictionary<string, string?> { ["k1"] = null, ["k2"] = "" });
+            .Setup(s => s.GetManyAsync<byte[]>(It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, byte[]?> { ["k1"] = null, ["k2"] = Array.Empty<byte>() });
 
         var sut = new CompressedCacheService(_innerMock.Object);
 

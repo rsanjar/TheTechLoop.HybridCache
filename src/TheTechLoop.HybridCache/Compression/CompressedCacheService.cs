@@ -1,16 +1,21 @@
 using System.IO.Compression;
-using System.Text;
-using System.Text.Json;
 using TheTechLoop.HybridCache.Abstractions;
+using TheTechLoop.HybridCache.Serialization;
 
 namespace TheTechLoop.HybridCache.Compression;
 
 /// <summary>
 /// Decorator for ICacheService that automatically compresses large values
-/// before storing in cache. Values > 1KB are compressed with GZip.
+/// before storing in cache. Values exceeding the configured threshold are
+/// compressed with GZip.
 /// <para>
-/// Compression reduces Redis memory usage and network bandwidth at the cost
-/// of CPU cycles. Best for text-heavy data (JSON, XML, HTML).
+/// Binary wire format: <c>[1-byte header][payload]</c>
+/// <list type="bullet">
+///   <item><c>0x00</c> — payload is raw UTF-8 JSON bytes</item>
+///   <item><c>0x01</c> — payload is GZip-compressed UTF-8 JSON bytes</item>
+/// </list>
+/// Stored as <c>byte[]</c> through the inner service, eliminating the
+/// Base64 overhead of the previous string-based format.
 /// </para>
 /// </summary>
 public class CompressedCacheService : ICacheService
@@ -19,7 +24,8 @@ public class CompressedCacheService : ICacheService
     private readonly int _compressionThresholdBytes;
     private readonly CompressionLevel _compressionLevel;
 
-    private const string CompressionMarker = "GZIP:";
+    private const byte HeaderRaw = 0x00;
+    private const byte HeaderGzip = 0x01;
 
     /// <summary>
     /// Initializes a new instance of <see cref="CompressedCacheService"/>.
@@ -37,57 +43,34 @@ public class CompressedCacheService : ICacheService
         _compressionLevel = compressionLevel;
     }
 
-    /// <summary>
-    /// Gets or creates a cache entry. Uses compressed Get/Set paths so the
-    /// inner service's stampede protection is preserved while values are
-    /// transparently compressed.
-    /// </summary>
-    /// <param name="key"></param>
-    /// <param name="factory"></param>
-    /// <param name="expiration"></param>
-    /// <param name="cancellationToken"></param>
-    /// <typeparam name="T"></typeparam>
-    /// <returns></returns>
+    /// <inheritdoc />
     public async Task<T> GetOrCreateAsync<T>(
         string key,
         Func<Task<T>> factory,
         TimeSpan expiration,
         CancellationToken cancellationToken = default)
     {
-        var cachedData = await _inner.GetOrCreateAsync(
+        var cachedBytes = await _inner.GetOrCreateAsync(
             key,
-            async () => await SerializeAndCompressAsync(await factory(), cancellationToken),
+            async () => await PackAsync(await factory(), cancellationToken),
             expiration,
             cancellationToken);
 
-        return (await DecompressAndDeserializeAsync<T>(cachedData, cancellationToken))!;
+        return Unpack<T>(cachedBytes)!;
     }
 
-    /// <summary>
-    /// Gets a cache entry.
-    /// </summary>
-    /// <param name="key"></param>
-    /// <param name="cancellationToken"></param>
-    /// <typeparam name="T"></typeparam>
-    /// <returns></returns>
+    /// <inheritdoc />
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
-        var cachedData = await _inner.GetAsync<string>(key, cancellationToken);
+        var cachedBytes = await _inner.GetAsync<byte[]>(key, cancellationToken);
 
-        if (string.IsNullOrEmpty(cachedData))
+        if (cachedBytes is not { Length: > 1 })
             return default;
 
-        return await DecompressAndDeserializeAsync<T>(cachedData, cancellationToken);
+        return Unpack<T>(cachedBytes);
     }
 
-    /// <summary>
-    /// Sets a cache entry.
-    /// </summary>
-    /// <param name="key"></param>
-    /// <param name="value"></param>
-    /// <param name="expiration"></param>
-    /// <param name="cancellationToken"></param>
-    /// <typeparam name="T"></typeparam>
+    /// <inheritdoc />
     public async Task SetAsync<T>(
         string key,
         T value,
@@ -97,141 +80,119 @@ public class CompressedCacheService : ICacheService
         if (value is null)
             return;
 
-        var serialized = await SerializeAndCompressAsync(value, cancellationToken);
-        await _inner.SetAsync(key, serialized, expiration, cancellationToken);
+        var packed = await PackAsync(value, cancellationToken);
+        await _inner.SetAsync(key, packed, expiration, cancellationToken);
     }
 
-    /// <summary>
-    /// Sets a cache entry with advanced expiration options.
-    /// </summary>
-    /// <param name="key"></param>
-    /// <param name="value"></param>
-    /// <param name="options"></param>
-    /// <param name="cancellationToken"></param>
-    /// <typeparam name="T"></typeparam>
-    /// <returns></returns>
+    /// <inheritdoc />
     public async Task SetAsync<T>(string key, T value, CacheEntryOptions options, CancellationToken cancellationToken = default)
     {
         if (value is null)
             return;
 
-        var serialized = await SerializeAndCompressAsync(value, cancellationToken);
-        await _inner.SetAsync(key, serialized, options, cancellationToken);
+        var packed = await PackAsync(value, cancellationToken);
+        await _inner.SetAsync(key, packed, options, cancellationToken);
     }
 
-    /// <summary>
-    /// Removes a cache entry.
-    /// </summary>
-    /// <param name="key"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
+    /// <inheritdoc />
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
         => _inner.RemoveAsync(key, cancellationToken);
 
-    /// <summary>
-    /// Removes a cache entry by its prefix.
-    /// </summary>
-    /// <param name="prefix"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
+    /// <inheritdoc />
     public Task RemoveByPrefixAsync(string prefix, CancellationToken cancellationToken = default)
         => _inner.RemoveByPrefixAsync(prefix, cancellationToken);
 
-    /// <summary>
-    /// Refreshes a cache entry.
-    /// </summary>
-    /// <param name="key"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
+    /// <inheritdoc />
     public Task RefreshAsync(string key, CancellationToken cancellationToken = default)
         => _inner.RefreshAsync(key, cancellationToken);
 
-    /// <summary>
-    /// Gets multiple cache entries with decompression support.
-    /// </summary>
-    /// <param name="keys"></param>
-    /// <param name="cancellationToken"></param>
-    /// <typeparam name="T"></typeparam>
-    /// <returns></returns>
+    /// <inheritdoc />
     public async Task<Dictionary<string, T?>> GetManyAsync<T>(IEnumerable<string> keys, CancellationToken cancellationToken = default)
     {
-        var rawResults = await _inner.GetManyAsync<string>(keys, cancellationToken);
+        var rawResults = await _inner.GetManyAsync<byte[]>(keys, cancellationToken);
         var results = new Dictionary<string, T?>(rawResults.Count);
 
-        foreach (var (key, cachedData) in rawResults)
+        foreach (var (key, cachedBytes) in rawResults)
         {
-            if (string.IsNullOrEmpty(cachedData))
+            if (cachedBytes is not { Length: > 1 })
             {
                 results[key] = default;
                 continue;
             }
 
-            results[key] = await DecompressAndDeserializeAsync<T>(cachedData, cancellationToken);
+            results[key] = Unpack<T>(cachedBytes);
         }
 
         return results;
     }
 
-    /// <summary>
-    /// Sets multiple cache entries with compression support.
-    /// </summary>
-    /// <param name="items"></param>
-    /// <param name="expiration"></param>
-    /// <param name="cancellationToken"></param>
-    /// <typeparam name="T"></typeparam>
-    /// <returns></returns>
+    /// <inheritdoc />
     public async Task SetManyAsync<T>(Dictionary<string, T> items, TimeSpan? expiration = null, CancellationToken cancellationToken = default)
     {
-        var serializedItems = new Dictionary<string, string>(items.Count);
+        var packedItems = new Dictionary<string, byte[]>(items.Count);
 
         foreach (var (key, value) in items)
         {
-            serializedItems[key] = await SerializeAndCompressAsync(value, cancellationToken);
+            packedItems[key] = await PackAsync(value, cancellationToken);
         }
 
-        await _inner.SetManyAsync(serializedItems, expiration, cancellationToken);
+        await _inner.SetManyAsync(packedItems, expiration, cancellationToken);
     }
 
     /// <summary>
-    /// Serializes a value to a JSON string, compressing with GZip if the
-    /// serialized size exceeds the configured threshold.
+    /// Serializes a value to UTF-8 JSON bytes and, if the payload exceeds
+    /// the compression threshold, GZip-compresses it. The result is prefixed
+    /// with a 1-byte header: <c>0x00</c> (raw) or <c>0x01</c> (GZip).
     /// </summary>
-    private async Task<string> SerializeAndCompressAsync<T>(T value, CancellationToken cancellationToken)
+    private async Task<byte[]> PackAsync<T>(T value, CancellationToken cancellationToken)
     {
-        var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(value);
+        var jsonBytes = CacheSerializer.Serialize(value);
 
         if (jsonBytes.Length <= _compressionThresholdBytes)
-            return Encoding.UTF8.GetString(jsonBytes);
+        {
+            var raw = new byte[1 + jsonBytes.Length];
+            raw[0] = HeaderRaw;
+            jsonBytes.CopyTo(raw, 1);
+            return raw;
+        }
 
         using var outputStream = new MemoryStream();
+        outputStream.WriteByte(HeaderGzip);
+
         await using (var gzipStream = new GZipStream(outputStream, _compressionLevel, leaveOpen: true))
         {
             await gzipStream.WriteAsync(jsonBytes, cancellationToken);
         }
 
-        var compressedBase64 = Convert.ToBase64String(
-            outputStream.GetBuffer(), 0, (int)outputStream.Length);
-        return string.Concat(CompressionMarker, compressedBase64);
+        return outputStream.ToArray();
     }
 
     /// <summary>
-    /// Decompresses (if needed) and deserializes a cached string value.
+    /// Reads the 1-byte header and either returns the raw JSON slice
+    /// or GZip-decompresses the payload, then deserializes to <typeparamref name="T"/>.
     /// </summary>
-    private static async Task<T?> DecompressAndDeserializeAsync<T>(string cachedData, CancellationToken cancellationToken)
+    private static T? Unpack<T>(byte[] data)
     {
-        if (!cachedData.StartsWith(CompressionMarker, StringComparison.Ordinal))
-            return JsonSerializer.Deserialize<T>(cachedData);
+        if (data is not { Length: > 1 })
+            return default;
 
-        var compressedBase64 = cachedData[CompressionMarker.Length..];
-        var compressedBytes = Convert.FromBase64String(compressedBase64);
+        var header = data[0];
+        var payload = data.AsSpan(1);
 
-        using var inputStream = new MemoryStream(compressedBytes);
-        using var gzipStream = new GZipStream(inputStream, CompressionMode.Decompress);
-        using var outputStream = new MemoryStream();
+        if (header == HeaderRaw)
+            return CacheSerializer.Deserialize<T>(payload);
 
-        await gzipStream.CopyToAsync(outputStream, cancellationToken);
-        outputStream.Position = 0;
+        if (header == HeaderGzip)
+        {
+            using var inputStream = new MemoryStream(data, 1, data.Length - 1);
+            using var gzipStream = new GZipStream(inputStream, CompressionMode.Decompress);
+            using var outputStream = new MemoryStream();
 
-        return await JsonSerializer.DeserializeAsync<T>(outputStream, cancellationToken: cancellationToken);
+            gzipStream.CopyTo(outputStream);
+
+            return CacheSerializer.Deserialize<T>(outputStream.ToArray());
+        }
+
+        return default;
     }
 }

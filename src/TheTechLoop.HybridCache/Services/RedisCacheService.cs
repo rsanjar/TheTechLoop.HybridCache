@@ -2,10 +2,10 @@ using System.Diagnostics;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Text.Json;
 using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Configuration;
 using TheTechLoop.HybridCache.Metrics;
+using TheTechLoop.HybridCache.Serialization;
 using TheTechLoop.HybridCache.Tagging;
 
 namespace TheTechLoop.HybridCache.Services;
@@ -23,11 +23,7 @@ public class RedisCacheService : ICacheService
     private readonly CacheMetrics _metrics;
     private readonly CircuitBreakerState _circuitBreaker;
     private readonly ICacheTagService? _tagService;
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
+    private readonly RequestCoalescer _coalescer = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RedisCacheService"/> class.
@@ -54,7 +50,13 @@ public class RedisCacheService : ICacheService
         _tagService = tagService;
         _circuitBreaker = new CircuitBreakerState(
             _config.CircuitBreaker.BreakDurationSeconds,
-            _config.CircuitBreaker.FailureThreshold);
+            _config.CircuitBreaker.FailureThreshold,
+            _config.CircuitBreaker.HalfOpenSuccessThreshold,
+            state =>
+            {
+                _metrics.RecordCircuitBreakerTransition(state);
+                _logger.LogWarning("Circuit breaker transitioned to {State}", state);
+            });
     }
 
     /// <inheritdoc />
@@ -79,58 +81,26 @@ public class RedisCacheService : ICacheService
         try
         {
             // Try reading from cache
-            var cachedData = await _cache.GetStringAsync(key, cancellationToken);
+            var cachedBytes = await _cache.GetAsync(key, cancellationToken);
 
-            if (!string.IsNullOrEmpty(cachedData))
+            if (cachedBytes is { Length: > 0 })
             {
                 sw.Stop();
                 _metrics.RecordHit(key, sw.Elapsed.TotalMilliseconds);
                 LogDebug("Cache hit for key: {Key}", key);
 
                 _circuitBreaker.RecordSuccess();
-                return JsonSerializer.Deserialize<T>(cachedData, JsonOptions)!;
+                return CacheSerializer.Deserialize<T>(cachedBytes)!;
             }
 
             sw.Stop();
             _metrics.RecordMiss(key, sw.Elapsed.TotalMilliseconds);
             LogDebug("Cache miss for key: {Key}", key);
 
-            // Stampede protection: acquire lock before populating
-            var lockSw = Stopwatch.StartNew();
-            await using var lockHandle = await _lock.TryAcquireAsync(
-                $"lock:{key}", TimeSpan.FromSeconds(10), cancellationToken);
-            lockSw.Stop();
-            _metrics.RecordLockWait(lockSw.Elapsed.TotalMilliseconds, lockHandle is not null);
-
-            if (lockHandle is null)
-            {
-                // Another instance is populating; poll cache with jittered backoff
-                for (var attempt = 0; attempt < _config.StampedeRetryMaxAttempts; attempt++)
-                {
-                    var jitteredDelay = GetJitteredDelay(_config.StampedeRetryBaseDelayMs, attempt);
-
-                    try
-                    {
-                        await Task.Delay(jitteredDelay, cancellationToken);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        return await factory();
-                    }
-
-                    cachedData = await _cache.GetStringAsync(key, cancellationToken);
-
-                    if (!string.IsNullOrEmpty(cachedData))
-                        return JsonSerializer.Deserialize<T>(cachedData, JsonOptions)!;
-                }
-            }
-
-            // Populate from source
-            var value = await factory();
-            await SetCacheSafeAsync(key, value, expiration, cancellationToken);
-
-            _circuitBreaker.RecordSuccess();
-            return value;
+            // Coalesce in-process callers: only one thread per key enters
+            // the lock + factory path; the rest await the same Task.
+            return await _coalescer.CoalesceAsync(key, () =>
+                PopulateAsync(key, factory, expiration, cancellationToken));
         }
         catch (Exception ex)
         {
@@ -141,6 +111,53 @@ public class RedisCacheService : ICacheService
         }
     }
 
+    /// <summary>
+    /// Acquires the distributed lock, retries on failure, and populates the cache.
+    /// Called by the coalescer so that at most one in-process caller executes this
+    /// for a given key at a time.
+    /// </summary>
+    private async Task<T> PopulateAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        TimeSpan expiration,
+        CancellationToken cancellationToken)
+    {
+        // Re-check cache (may have been populated by another process while
+        // this caller was waiting for the coalescing slot)
+        var cachedBytes = await _cache.GetAsync(key, cancellationToken);
+        if (cachedBytes is { Length: > 0 })
+        {
+            _circuitBreaker.RecordSuccess();
+            return CacheSerializer.Deserialize<T>(cachedBytes)!;
+        }
+
+        // Stampede protection: acquire lock or poll until populated
+        var (lockHandle, found, polledValue) = await StampedeProtection.AcquireOrPollAsync<T>(
+            key, _lock, _config, _metrics,
+            isCircuitOpen: () => IsCircuitOpen(),
+            pollCacheAsync: async () =>
+            {
+                var bytes = await _cache.GetAsync(key, cancellationToken);
+                if (bytes is { Length: > 0 })
+                    return (true, CacheSerializer.Deserialize<T>(bytes)!);
+                return (false, default);
+            },
+            cancellationToken);
+
+        if (lockHandle is not null)
+            await lockHandle.DisposeAsync();
+
+        if (found)
+            return polledValue!;
+
+        // Populate from source
+        var value = await factory();
+        await SetCacheSafeAsync(key, value, expiration, cancellationToken);
+
+        _circuitBreaker.RecordSuccess();
+        return value;
+    }
+
     /// <inheritdoc />
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
@@ -149,9 +166,9 @@ public class RedisCacheService : ICacheService
 
         try
         {
-            var cachedData = await _cache.GetStringAsync(key, cancellationToken);
+            var cachedBytes = await _cache.GetAsync(key, cancellationToken);
 
-            if (string.IsNullOrEmpty(cachedData))
+            if (cachedBytes is not { Length: > 0 })
             {
                 _metrics.RecordMiss(key, 0);
                 LogDebug("Cache miss for key: {Key}", key);
@@ -162,7 +179,7 @@ public class RedisCacheService : ICacheService
             LogDebug("Cache hit for key: {Key}", key);
             _circuitBreaker.RecordSuccess();
 
-            return JsonSerializer.Deserialize<T>(cachedData, JsonOptions);
+            return CacheSerializer.Deserialize<T>(cachedBytes);
         }
         catch (Exception ex)
         {
@@ -280,7 +297,7 @@ public class RedisCacheService : ICacheService
             // Pipeline GET operations in bounded chunks to avoid Redis saturation
             foreach (var chunk in keyList.Chunk(_config.MaxBatchConcurrency))
             {
-                var tasks = chunk.Select(key => _cache.GetStringAsync(key, cancellationToken)).ToArray();
+                var tasks = chunk.Select(key => _cache.GetAsync(key, cancellationToken)).ToArray();
                 var values = await Task.WhenAll(tasks);
 
                 for (int i = 0; i < chunk.Length; i++)
@@ -288,10 +305,10 @@ public class RedisCacheService : ICacheService
                     var key = chunk[i];
                     var data = values[i];
 
-                    if (!string.IsNullOrEmpty(data))
+                    if (data is { Length: > 0 })
                     {
                         _metrics.RecordHit(key, 0);
-                        result[key] = JsonSerializer.Deserialize<T>(data, JsonOptions);
+                        result[key] = CacheSerializer.Deserialize<T>(data);
                     }
                     else
                     {
@@ -336,8 +353,8 @@ public class RedisCacheService : ICacheService
             {
                 var tasks = chunk.Select(kvp =>
                 {
-                    var serialized = JsonSerializer.Serialize(kvp.Value, JsonOptions);
-                    return _cache.SetStringAsync(kvp.Key, serialized, options, cancellationToken);
+                    var bytes = CacheSerializer.Serialize(kvp.Value);
+                    return _cache.SetAsync(kvp.Key, bytes, options, cancellationToken);
                 }).ToArray();
 
                 await Task.WhenAll(tasks);
@@ -363,13 +380,13 @@ public class RedisCacheService : ICacheService
             if (value is null || EqualityComparer<T>.Default.Equals(value, default))
                 return;
 
-            var serializedData = JsonSerializer.Serialize(value, JsonOptions);
+            var bytes = CacheSerializer.Serialize(value);
             var options = new DistributedCacheEntryOptions
             {
                 AbsoluteExpirationRelativeToNow = expiration ?? TimeSpan.FromMinutes(_config.DefaultExpirationMinutes)
             };
 
-            await _cache.SetStringAsync(key, serializedData, options, cancellationToken);
+            await _cache.SetAsync(key, bytes, options, cancellationToken);
             LogDebug("Cache set for key: {Key}, Expiration: {Expiration}", key, options.AbsoluteExpirationRelativeToNow);
         }
         catch (Exception ex)
@@ -405,17 +422,5 @@ public class RedisCacheService : ICacheService
     {
         if (_config.EnableLogging)
             _logger.LogDebug(message, args);
-    }
-
-    /// <summary>
-    /// Returns a jittered delay for stampede-protection retries.
-    /// Delay grows exponentially (baseMs × 2^attempt) with random jitter
-    /// in [delay .. delay × 2) to avoid lock-step contention.
-    /// </summary>
-    private static TimeSpan GetJitteredDelay(int baseMs, int attempt)
-    {
-        var delayMs = baseMs * (1 << attempt);
-        var jitter = Random.Shared.Next(0, delayMs);
-        return TimeSpan.FromMilliseconds(delayMs + jitter);
     }
 }

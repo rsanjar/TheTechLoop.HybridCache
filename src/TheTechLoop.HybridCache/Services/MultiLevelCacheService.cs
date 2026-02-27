@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -7,6 +6,7 @@ using Microsoft.Extensions.Options;
 using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Configuration;
 using TheTechLoop.HybridCache.Metrics;
+using TheTechLoop.HybridCache.Serialization;
 
 namespace TheTechLoop.HybridCache.Services;
 
@@ -24,11 +24,8 @@ public class MultiLevelCacheService : ICacheService
     private readonly CacheConfig _config;
     private readonly CacheMetrics _metrics;
     private readonly CircuitBreakerState _circuitBreaker;
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
+    private readonly ICacheSizeEstimator _sizeEstimator;
+    private readonly RequestCoalescer _coalescer = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MultiLevelCacheService"/> class.
@@ -39,13 +36,15 @@ public class MultiLevelCacheService : ICacheService
     /// <param name="logger"></param>
     /// <param name="config"></param>
     /// <param name="metrics"></param>
+    /// <param name="sizeEstimator">Optional pluggable size estimator for L1 eviction</param>
     public MultiLevelCacheService(
         IMemoryCache l1Cache,
         IDistributedCache l2Cache,
         IDistributedLock distributedLock,
         ILogger<MultiLevelCacheService> logger,
         IOptions<CacheConfig> config,
-        CacheMetrics metrics)
+        CacheMetrics metrics,
+        ICacheSizeEstimator? sizeEstimator = null)
     {
         _l1 = l1Cache;
         _l2 = l2Cache;
@@ -53,9 +52,16 @@ public class MultiLevelCacheService : ICacheService
         _logger = logger;
         _config = config.Value;
         _metrics = metrics;
+        _sizeEstimator = sizeEstimator ?? new DefaultCacheSizeEstimator();
         _circuitBreaker = new CircuitBreakerState(
             _config.CircuitBreaker.BreakDurationSeconds,
-            _config.CircuitBreaker.FailureThreshold);
+            _config.CircuitBreaker.FailureThreshold,
+            _config.CircuitBreaker.HalfOpenSuccessThreshold,
+            state =>
+            {
+                _metrics.RecordCircuitBreakerTransition(state);
+                _logger.LogWarning("Circuit breaker transitioned to {State}", state);
+            });
     }
 
     /// <inheritdoc />
@@ -84,15 +90,15 @@ public class MultiLevelCacheService : ICacheService
         {
             try
             {
-                var l2Data = await _l2.GetStringAsync(key, cancellationToken);
+                var l2Bytes = await _l2.GetAsync(key, cancellationToken);
 
-                if (!string.IsNullOrEmpty(l2Data))
+                if (l2Bytes is { Length: > 0 })
                 {
                     sw.Stop();
                     _metrics.RecordHit(key, sw.Elapsed.TotalMilliseconds, "L2");
                     LogDebug("L2 cache hit for key: {Key}", key);
 
-                    var l2Value = JsonSerializer.Deserialize<T>(l2Data, JsonOptions)!;
+                    var l2Value = CacheSerializer.Deserialize<T>(l2Bytes)!;
 
                     // Promote to L1
                     SetL1(key, l2Value);
@@ -112,46 +118,91 @@ public class MultiLevelCacheService : ICacheService
         _metrics.RecordMiss(key, sw.Elapsed.TotalMilliseconds);
         LogDebug("Cache miss (L1+L2) for key: {Key}", key);
 
-        // Stampede protection
-        var lockSw = Stopwatch.StartNew();
-        await using var lockHandle = await _lock.TryAcquireAsync(
-            $"lock:{key}", TimeSpan.FromSeconds(10), cancellationToken);
-        lockSw.Stop();
-        _metrics.RecordLockWait(lockSw.Elapsed.TotalMilliseconds, lockHandle is not null);
+        // Coalesce in-process callers: only one thread per key enters
+        // the lock + factory path; the rest await the same Task.
+        return await _coalescer.CoalesceAsync(key, () =>
+            PopulateMultiLevelAsync(key, factory, expiration, cancellationToken));
+    }
 
-        if (lockHandle is null)
+    /// <summary>
+    /// Acquires the distributed lock, retries on failure, and populates
+    /// both cache levels.  Called by the coalescer so that at most one
+    /// in-process caller executes this for a given key at a time.
+    /// </summary>
+    private async Task<T> PopulateMultiLevelAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        TimeSpan expiration,
+        CancellationToken cancellationToken)
+    {
+        // Re-check L1 (may have been populated by another coalesced caller)
+        if (_l1.TryGetValue(key, out T? l1Value) && l1Value is not null)
+            return l1Value;
+
+        // Re-check L2 (another process may have populated while we waited)
+        if (!IsCircuitOpen())
         {
-            // Poll L1/L2 with jittered backoff until populated or attempts exhausted
-            for (var attempt = 0; attempt < _config.StampedeRetryMaxAttempts; attempt++)
+            try
             {
-                var jitteredDelay = GetJitteredDelay(_config.StampedeRetryBaseDelayMs, attempt);
-                await Task.Delay(jitteredDelay, cancellationToken);
+                var l2Bytes = await _l2.GetAsync(key, cancellationToken);
+                if (l2Bytes is { Length: > 0 })
+                {
+                    var l2Value = CacheSerializer.Deserialize<T>(l2Bytes)!;
+                    SetL1(key, l2Value);
+                    _circuitBreaker.RecordSuccess();
+                    return l2Value;
+                }
+            }
+            catch (Exception ex)
+            {
+                _circuitBreaker.RecordFailure();
+                _logger.LogWarning(ex, "L2 re-check failed for key: {Key}", key);
+            }
+        }
 
+        // Stampede protection: acquire lock or poll until populated
+        var (lockHandle, found, polledValue) = await StampedeProtection.AcquireOrPollAsync<T>(
+            key, _lock, _config, _metrics,
+            isCircuitOpen: () => IsCircuitOpen(),
+            pollCacheAsync: async () =>
+            {
                 // Retry L1 then L2
                 if (_l1.TryGetValue(key, out T? retryValue) && retryValue is not null)
-                    return retryValue;
+                    return (true, retryValue);
 
                 try
                 {
-                    var retryData = await _l2.GetStringAsync(key, cancellationToken);
-                    if (!string.IsNullOrEmpty(retryData))
-                        return JsonSerializer.Deserialize<T>(retryData, JsonOptions)!;
+                    var retryBytes = await _l2.GetAsync(key, cancellationToken);
+                    if (retryBytes is { Length: > 0 })
+                    {
+                        var value = CacheSerializer.Deserialize<T>(retryBytes)!;
+                        SetL1(key, value);
+                        return (true, value);
+                    }
                 }
                 catch
                 {
                     // Fall through to next attempt or factory
                 }
-            }
-        }
+
+                return (false, default);
+            },
+            cancellationToken);
+
+        if (lockHandle is not null)
+            await lockHandle.DisposeAsync();
+
+        if (found)
+            return polledValue!;
 
         // Populate from source
-        var value = await factory();
+        var result = await factory();
 
         // Write to both levels
-        SetL1(key, value);
-        await SetL2SafeAsync(key, value, expiration, cancellationToken);
+        SetL1(key, result);
+        await SetL2SafeAsync(key, result, expiration, cancellationToken);
 
-        return value;
+        return result;
     }
 
     /// <inheritdoc />
@@ -170,12 +221,12 @@ public class MultiLevelCacheService : ICacheService
 
         try
         {
-            var l2Data = await _l2.GetStringAsync(key, cancellationToken);
+            var l2Bytes = await _l2.GetAsync(key, cancellationToken);
 
-            if (string.IsNullOrEmpty(l2Data))
+            if (l2Bytes is not { Length: > 0 })
                 return default;
 
-            var value = JsonSerializer.Deserialize<T>(l2Data, JsonOptions);
+            var value = CacheSerializer.Deserialize<T>(l2Bytes);
 
             if (value is not null)
                 SetL1(key, value);
@@ -221,7 +272,7 @@ public class MultiLevelCacheService : ICacheService
             var l1Options = new MemoryCacheEntryOptions
             {
                 SlidingExpiration = options.Expiration,
-                Size = EstimateSize(value),
+                Size = _sizeEstimator.EstimateSize(value),
                 Priority = CacheItemPriority.Normal
             };
             _l1.Set(key, value, l1Options);
@@ -318,7 +369,7 @@ public class MultiLevelCacheService : ICacheService
             {
                 foreach (var chunk in missingKeys.Chunk(_config.MaxBatchConcurrency))
                 {
-                    var tasks = chunk.Select(k => _l2.GetStringAsync(k, cancellationToken)).ToArray();
+                    var tasks = chunk.Select(k => _l2.GetAsync(k, cancellationToken)).ToArray();
                     var values = await Task.WhenAll(tasks);
 
                     for (int i = 0; i < chunk.Length; i++)
@@ -326,9 +377,9 @@ public class MultiLevelCacheService : ICacheService
                         var key = chunk[i];
                         var data = values[i];
 
-                        if (!string.IsNullOrEmpty(data))
+                        if (data is { Length: > 0 })
                         {
-                            var value = JsonSerializer.Deserialize<T>(data, JsonOptions);
+                            var value = CacheSerializer.Deserialize<T>(data);
                             result[key] = value;
                             // Promote to L1
                             if (value is not null)
@@ -385,8 +436,8 @@ public class MultiLevelCacheService : ICacheService
                 {
                     var tasks = chunk.Select(kvp =>
                     {
-                        var serialized = JsonSerializer.Serialize(kvp.Value, JsonOptions);
-                        return _l2.SetStringAsync(kvp.Key, serialized, options, cancellationToken);
+                        var bytes = CacheSerializer.Serialize(kvp.Value);
+                        return _l2.SetAsync(kvp.Key, bytes, options, cancellationToken);
                     }).ToArray();
 
                     await Task.WhenAll(tasks);
@@ -410,21 +461,11 @@ public class MultiLevelCacheService : ICacheService
         var l1Options = new MemoryCacheEntryOptions
         {
             AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(_config.MemoryCache.DefaultExpirationSeconds),
-            Size = EstimateSize(value),
+            Size = _sizeEstimator.EstimateSize(value),
             Priority = CacheItemPriority.Normal
         };
 
         _l1.Set(key, value, l1Options);
-    }
-
-    private static long EstimateSize<T>(T value)
-    {
-        return value switch
-        {
-            string s => Math.Max(1, s.Length / 1000),  // 1 unit per KB
-            System.Collections.ICollection c => Math.Max(1, c.Count / 100),
-            _ => 1
-        };
     }
 
     private async Task SetL2SafeAsync<T>(
@@ -438,13 +479,13 @@ public class MultiLevelCacheService : ICacheService
 
         try
         {
-            var serialized = JsonSerializer.Serialize(value, JsonOptions);
+            var bytes = CacheSerializer.Serialize(value);
             var options = new DistributedCacheEntryOptions
             {
                 AbsoluteExpirationRelativeToNow = expiration ?? TimeSpan.FromMinutes(_config.DefaultExpirationMinutes)
             };
 
-            await _l2.SetStringAsync(key, serialized, options, cancellationToken);
+            await _l2.SetAsync(key, bytes, options, cancellationToken);
             _circuitBreaker.RecordSuccess();
         }
         catch (Exception ex)
@@ -467,12 +508,5 @@ public class MultiLevelCacheService : ICacheService
     {
         if (_config.EnableLogging)
             _logger.LogDebug(message, args);
-    }
-
-    private static TimeSpan GetJitteredDelay(int baseMs, int attempt)
-    {
-        var delayMs = baseMs * (1 << attempt);
-        var jitter = Random.Shared.Next(0, delayMs);
-        return TimeSpan.FromMilliseconds(delayMs + jitter);
     }
 }

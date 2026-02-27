@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using StackExchange.Redis;
+using TheTechLoop.HybridCache.Configuration;
 
 namespace TheTechLoop.HybridCache.Tagging;
 
@@ -38,35 +40,59 @@ public interface ICacheTagService
 /// Redis-based implementation of cache tagging.
 /// Uses forward indices (tag → keys) for group invalidation and
 /// reverse indices (key → tags) for efficient single-key tag removal.
+/// <para>
+/// Index keys have a configurable TTL (<see cref="CacheConfig.TagIndexTtlMinutes"/>)
+/// to prevent unbounded memory growth when cached entries expire naturally.
+/// <c>RemoveByTagAsync</c> uses a server-side Lua script for atomicity and
+/// lazy-cleans stale members (keys that have already expired in Redis).
+/// </para>
 /// </summary>
 public class RedisCacheTagService : ICacheTagService
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<RedisCacheTagService> _logger;
+    private readonly CacheConfig _config;
 
     private const string TagPrefix = "tag:";
     private const string ReverseIndexPrefix = "key:tags:";
+
+    // Lua script: atomically read tag members, delete data + reverse indices,
+    // then delete the tag set.  Returns the count of deleted data keys.
+    // Stale members (already expired) are silently skipped by redis.unlink.
+    private const string RemoveByTagLuaScript = """
+        local tagKey = KEYS[1]
+        local reversePrefix = ARGV[1]
+        local members = redis.call('SMEMBERS', tagKey)
+        if #members == 0 then return 0 end
+        for i = 1, #members do
+            redis.call('UNLINK', reversePrefix .. members[i])
+        end
+        redis.call('UNLINK', tagKey, unpack(members))
+        return #members
+        """;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RedisCacheTagService"/> class.
     /// </summary>
     /// <param name="redis"></param>
     /// <param name="logger"></param>
+    /// <param name="config"></param>
     public RedisCacheTagService(
         IConnectionMultiplexer redis,
-        ILogger<RedisCacheTagService> logger)
+        ILogger<RedisCacheTagService> logger,
+        IOptions<CacheConfig> config)
     {
         _redis = redis;
         _logger = logger;
+        _config = config.Value;
     }
 
     /// <summary>
     /// Adds tags to a cache key. Maintains both forward (tag → keys) and
     /// reverse (key → tags) indices for efficient lookups in either direction.
+    /// Applies a TTL to every index key so orphaned metadata expires
+    /// even if the cached data entry is never explicitly removed.
     /// </summary>
-    /// <param name="key"></param>
-    /// <param name="tags"></param>
-    /// <param name="cancellationToken"></param>
     public async Task AddTagsAsync(string key, IEnumerable<string> tags, CancellationToken cancellationToken = default)
     {
         var db = _redis.GetDatabase();
@@ -77,16 +103,33 @@ public class RedisCacheTagService : ICacheTagService
 
         try
         {
-            // Forward index: add key to each tag's Set
-            var forwardTasks = tagList.Select(tag =>
-                db.SetAddAsync($"{TagPrefix}{tag}", key)
-            );
+            var indexTtl = _config.TagIndexTtlMinutes > 0
+                ? TimeSpan.FromMinutes(_config.TagIndexTtlMinutes)
+                : (TimeSpan?)null;
 
-            // Reverse index: record which tags this key belongs to
+            var batch = db.CreateBatch();
+            var tasks = new List<Task>();
+
+            // Forward index: add key to each tag's Set + refresh TTL
+            foreach (var tag in tagList)
+            {
+                var tagKey = $"{TagPrefix}{tag}";
+                tasks.Add(batch.SetAddAsync(tagKey, key));
+
+                if (indexTtl is not null)
+                    tasks.Add(batch.KeyExpireAsync(tagKey, indexTtl));
+            }
+
+            // Reverse index: record which tags this key belongs to + refresh TTL
+            var reverseKey = $"{ReverseIndexPrefix}{key}";
             var tagValues = tagList.Select(t => (RedisValue)t).ToArray();
-            var reverseTask = db.SetAddAsync($"{ReverseIndexPrefix}{key}", tagValues);
+            tasks.Add(batch.SetAddAsync(reverseKey, tagValues));
 
-            await Task.WhenAll([.. forwardTasks, reverseTask]);
+            if (indexTtl is not null)
+                tasks.Add(batch.KeyExpireAsync(reverseKey, indexTtl));
+
+            batch.Execute();
+            await Task.WhenAll(tasks);
 
             _logger.LogDebug("Added tags {Tags} to key {Key}", string.Join(", ", tagList), key);
         }
@@ -99,9 +142,9 @@ public class RedisCacheTagService : ICacheTagService
     /// <summary>
     /// Removes a cache key from all its tag associations using the reverse index.
     /// O(number of tags for this key) instead of O(total tags in database).
+    /// Performs lazy cleanup: if the forward tag set becomes empty after
+    /// removing this member, the tag set key is deleted.
     /// </summary>
-    /// <param name="key"></param>
-    /// <param name="cancellationToken"></param>
     public async Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
         var db = _redis.GetDatabase();
@@ -114,16 +157,26 @@ public class RedisCacheTagService : ICacheTagService
 
             if (tags.Length > 0)
             {
-                // Remove key from each of its tag sets
-                var removeTasks = tags.Select(tag =>
-                    db.SetRemoveAsync($"{TagPrefix}{tag}", key)
-                );
+                var batch = db.CreateBatch();
+                var tasks = new List<Task>();
 
-                await Task.WhenAll(removeTasks);
+                foreach (var tag in tags)
+                {
+                    var tagKey = $"{TagPrefix}{tag}";
+                    tasks.Add(batch.SetRemoveAsync(tagKey, key));
+                }
+
+                // Delete the reverse index entry
+                tasks.Add(batch.KeyDeleteAsync(reverseKey));
+
+                batch.Execute();
+                await Task.WhenAll(tasks);
             }
-
-            // Delete the reverse index entry
-            await db.KeyDeleteAsync(reverseKey);
+            else
+            {
+                // Reverse index is empty/missing — still try to clean it up
+                await db.KeyDeleteAsync(reverseKey);
+            }
 
             _logger.LogDebug("Removed key {Key} from {Count} tag(s)", key, tags.Length);
         }
@@ -136,9 +189,6 @@ public class RedisCacheTagService : ICacheTagService
     /// <summary>
     /// Gets all cache keys associated with a tag.
     /// </summary>
-    /// <param name="tag"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public async Task<IReadOnlyList<string>> GetKeysByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
         var db = _redis.GetDatabase();
@@ -156,37 +206,24 @@ public class RedisCacheTagService : ICacheTagService
     }
 
     /// <summary>
-    /// Removes all cache keys associated with a tag, including their reverse index entries.
+    /// Atomically removes all cache keys associated with a tag using a
+    /// server-side Lua script. Deletes data keys, reverse index entries,
+    /// and the tag set in a single round-trip.
     /// </summary>
-    /// <param name="tag"></param>
-    /// <param name="cancellationToken"></param>
     public async Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
     {
         var db = _redis.GetDatabase();
+        var tagKey = $"{TagPrefix}{tag}";
 
         try
         {
-            // Get all keys with this tag
-            var keys = await GetKeysByTagAsync(tag, cancellationToken);
+            var result = await db.ScriptEvaluateAsync(
+                RemoveByTagLuaScript,
+                [(RedisKey)tagKey],
+                [(RedisValue)ReverseIndexPrefix]);
 
-            if (keys.Count == 0)
-            {
-                _logger.LogDebug("No keys found for tag {Tag}", tag);
-                return;
-            }
-
-            // Delete all cache entries
-            var redisKeys = keys.Select(k => (RedisKey)k).ToArray();
-            await db.KeyDeleteAsync(redisKeys);
-
-            // Clean up reverse index entries for the deleted keys
-            var reverseKeys = keys.Select(k => (RedisKey)$"{ReverseIndexPrefix}{k}").ToArray();
-            await db.KeyDeleteAsync(reverseKeys);
-
-            // Delete the tag set itself
-            await db.KeyDeleteAsync($"{TagPrefix}{tag}");
-
-            _logger.LogDebug("Removed {Count} keys for tag {Tag}", keys.Count, tag);
+            var count = (int)result;
+            _logger.LogDebug("Atomically removed {Count} keys for tag {Tag}", count, tag);
         }
         catch (Exception ex)
         {

@@ -92,6 +92,16 @@ public sealed class CacheConfig
     public bool EnableTagging { get; set; }
 
     /// <summary>
+    /// TTL in minutes for tag index keys (forward and reverse).
+    /// Should be ≥ the longest cache entry TTL that uses tags.
+    /// Prevents unbounded growth when cached entries expire naturally
+    /// without an explicit <c>RemoveAsync</c> call.
+    /// Set to 0 to disable index expiration (not recommended in production).
+    /// </summary>
+    [Range(0, 14400)]
+    public int TagIndexTtlMinutes { get; set; } = 1440;
+
+    /// <summary>
     /// Enable cache warming on startup.
     /// </summary>
     public bool EnableWarmup { get; set; }
@@ -120,6 +130,14 @@ public sealed class CacheConfig
     /// </summary>
     [Range(1, 20)]
     public int StampedeRetryMaxAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// Timeout in seconds for the distributed stampede-protection lock.
+    /// Callers that cannot acquire the lock within this window fall back
+    /// to retry polling. Increase for slow factories; decrease for fast ones.
+    /// </summary>
+    [Range(1, 120)]
+    public int LockTimeoutSeconds { get; set; } = 10;
 }
 
 /// <summary>
@@ -143,6 +161,14 @@ public sealed class CircuitBreakerConfig
     /// </summary>
     [Range(1, 50)]
     public int FailureThreshold { get; set; } = 5;
+
+    /// <summary>
+    /// Number of successful probe requests required in the half-open state
+    /// before the circuit fully closes. A value of 1 means a single success
+    /// closes the circuit (current default behavior).
+    /// </summary>
+    [Range(1, 10)]
+    public int HalfOpenSuccessThreshold { get; set; } = 1;
 }
 
 /// <summary>

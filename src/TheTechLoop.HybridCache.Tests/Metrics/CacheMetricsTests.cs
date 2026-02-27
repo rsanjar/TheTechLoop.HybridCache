@@ -14,6 +14,7 @@ public class CacheMetricsTests : IDisposable
     private readonly MetricCollector<long> _errorsCollector;
     private readonly MetricCollector<long> _evictionsCollector;
     private readonly MetricCollector<long> _circuitBreakerCollector;
+    private readonly MetricCollector<long> _circuitBreakerTransitionsCollector;
     private readonly MetricCollector<double> _durationCollector;
     private readonly MetricCollector<double> _lockWaitCollector;
     private readonly MetricCollector<long> _batchSizeCollector;
@@ -30,6 +31,7 @@ public class CacheMetricsTests : IDisposable
         _errorsCollector = new MetricCollector<long>(_meterFactory, CacheMetrics.MeterName, "cache.errors");
         _evictionsCollector = new MetricCollector<long>(_meterFactory, CacheMetrics.MeterName, "cache.evictions");
         _circuitBreakerCollector = new MetricCollector<long>(_meterFactory, CacheMetrics.MeterName, "cache.circuit_breaker.bypasses");
+        _circuitBreakerTransitionsCollector = new MetricCollector<long>(_meterFactory, CacheMetrics.MeterName, "cache.circuit_breaker.transitions");
         _durationCollector = new MetricCollector<double>(_meterFactory, CacheMetrics.MeterName, "cache.duration");
         _lockWaitCollector = new MetricCollector<double>(_meterFactory, CacheMetrics.MeterName, "cache.lock.wait_duration");
         _batchSizeCollector = new MetricCollector<long>(_meterFactory, CacheMetrics.MeterName, "cache.batch.size");
@@ -97,12 +99,39 @@ public class CacheMetricsTests : IDisposable
     }
 
     [Fact]
+    public void RecordMiss_IncludesLevelTag()
+    {
+        _sut.RecordMiss("svc:v1:User:1", 1.0);
+
+        var measurement = _missesCollector.GetMeasurementSnapshot().Single();
+        measurement.Tags["cache.level"].Should().Be("L2");
+    }
+
+    [Fact]
+    public void RecordMiss_DurationIncludesLevelTag()
+    {
+        _sut.RecordMiss("svc:v1:User:1", 1.0, "L1");
+
+        var measurement = _durationCollector.GetMeasurementSnapshot().Single();
+        measurement.Tags["cache.level"].Should().Be("L1");
+    }
+
+    [Fact]
     public void RecordError_IncrementsCounter()
     {
         _sut.RecordError("svc:v1:User:1");
 
         _errorsCollector.GetMeasurementSnapshot().Should().ContainSingle()
             .Which.Value.Should().Be(1);
+    }
+
+    [Fact]
+    public void RecordError_IncludesLevelTag()
+    {
+        _sut.RecordError("svc:v1:User:1", "L1");
+
+        var measurement = _errorsCollector.GetMeasurementSnapshot().Single();
+        measurement.Tags["cache.level"].Should().Be("L1");
     }
 
     [Fact]
@@ -115,12 +144,44 @@ public class CacheMetricsTests : IDisposable
     }
 
     [Fact]
+    public void RecordEviction_IncludesLevelTag()
+    {
+        _sut.RecordEviction("svc:v1:User:1");
+
+        var measurement = _evictionsCollector.GetMeasurementSnapshot().Single();
+        measurement.Tags["cache.level"].Should().Be("L2");
+    }
+
+    [Fact]
     public void RecordCircuitBreakerBypass_IncrementsCounter()
     {
         _sut.RecordCircuitBreakerBypass();
         _sut.RecordCircuitBreakerBypass();
 
         _circuitBreakerCollector.GetMeasurementSnapshot().Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void RecordCircuitBreakerTransition_IncrementsWithStateTag()
+    {
+        _sut.RecordCircuitBreakerTransition("opened");
+
+        var measurement = _circuitBreakerTransitionsCollector.GetMeasurementSnapshot().Single();
+        measurement.Value.Should().Be(1);
+        measurement.Tags["cache.circuit_breaker.state"].Should().Be("opened");
+    }
+
+    [Fact]
+    public void RecordCircuitBreakerTransition_TracksMultipleStates()
+    {
+        _sut.RecordCircuitBreakerTransition("opened");
+        _sut.RecordCircuitBreakerTransition("half_open");
+        _sut.RecordCircuitBreakerTransition("closed");
+
+        var snapshots = _circuitBreakerTransitionsCollector.GetMeasurementSnapshot();
+        snapshots.Should().HaveCount(3);
+        snapshots.Select(s => (string)s.Tags["cache.circuit_breaker.state"]!)
+            .Should().BeEquivalentTo(["opened", "half_open", "closed"]);
     }
 
     [Fact]

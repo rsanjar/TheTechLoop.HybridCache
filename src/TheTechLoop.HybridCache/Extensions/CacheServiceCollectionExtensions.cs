@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using TheTechLoop.HybridCache.Abstractions;
@@ -155,6 +156,9 @@ public static class CacheServiceCollectionExtensions
             {
                 options.SizeLimit = config.MemoryCache.SizeLimit;
             });
+
+            // Register default size estimator if not already registered
+            services.TryAddSingleton<ICacheSizeEstimator, DefaultCacheSizeEstimator>();
 
             // Replace ICacheService with multi-level implementation
             // Remove existing ICacheService registration
