@@ -10,6 +10,7 @@
 - ✅ Latency and size metrics
 - ✅ OpenTelemetry integration
 - ✅ Prometheus/Grafana dashboards
+- ✅ Lock wait time, batch size, SCAN duration and deleted key count (v1.3.0, always emitted)
 
 **Real-World Use Cases:**
 - Identify which entities benefit most from caching
@@ -149,9 +150,10 @@ builder.Services.AddTheTechLoopCacheBehaviors();
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
-        // Register cache meters
-        metrics.AddMeter("TheTechLoop.HybridCache");
-        metrics.AddMeter("TheTechLoop.HybridCache.Effectiveness");
+        // Core operational metrics (always emitted, no config needed)
+        metrics.AddMeter("TheTechLoop.Cache");
+        // Per-entity effectiveness metrics (requires EnableEffectivenessMetrics: true)
+        metrics.AddMeter("TheTechLoop.Cache.Effectiveness");
 
         // Export to Prometheus
         metrics.AddPrometheusExporter();
@@ -487,22 +489,49 @@ public class CacheStatsController : ControllerBase
 
 ## Step 5: Prometheus Metrics Integration
 
-### Available Prometheus Metrics
+### All Available Metrics
+
+**Meter: `TheTechLoop.Cache`** — Core operational metrics (always emitted)
 
 ```promql
-# Cache hit/miss counters
+# Hit/miss/error counters
+cache_hits_total{cache_key_prefix="company-svc", cache_level="L1"}
+cache_hits_total{cache_key_prefix="company-svc", cache_level="L2"}
+cache_misses_total{cache_key_prefix="company-svc"}
+cache_errors_total{cache_key_prefix="company-svc"}
+cache_evictions_total{cache_key_prefix="company-svc"}
+cache_circuit_breaker_bypasses_total
+
+# Operation latency
+cache_duration_ms_bucket{cache_operation="hit", cache_level="L2", le="1"}
+cache_duration_ms_bucket{cache_operation="miss", le="10"}
+
+# Stampede-lock wait (v1.3.0)
+cache_lock_wait_duration_ms_bucket{cache_lock_acquired="true", le="5"}
+cache_lock_wait_duration_ms_bucket{cache_lock_acquired="false", le="50"}
+
+# Bulk batch size (v1.3.0)
+cache_batch_size_keys_bucket{cache_operation="get", le="100"}
+cache_batch_size_keys_bucket{cache_operation="set", le="100"}
+
+# SCAN-based prefix invalidation (v1.3.0)
+cache_scan_duration_ms_bucket{le="100"}
+cache_scan_deleted_keys_total
+```
+
+**Meter: `TheTechLoop.Cache.Effectiveness`** — Per-entity tracking (requires `EnableEffectivenessMetrics: true`)
+
+```promql
+# Per-entity hit/miss counters
 cache_entity_hits_total{entity="Company"}
 cache_entity_misses_total{entity="Company"}
 
-# Hit rate (calculated)
+# Live hit rate gauge
 cache_entity_hit_rate{entity="Company"}
 
-# Latency histogram (if implemented)
+# Latency and size histograms
 cache_entity_latency_ms_bucket{entity="Company", le="1"}
 cache_entity_latency_ms_bucket{entity="Company", le="5"}
-cache_entity_latency_ms_bucket{entity="Company", le="10"}
-
-# Size histogram (if implemented)
 cache_entity_size_bytes{entity="Company"}
 ```
 
@@ -532,6 +561,24 @@ topk(5, cache_entity_hits_total)
 #### Cache Miss Rate Trend
 ```promql
 rate(cache_entity_misses_total{entity="Company"}[5m])
+```
+
+#### Lock Contention Rate (v1.3.0)
+```promql
+# Ratio of failed lock acquisitions (stampede pressure indicator)
+rate(cache_lock_wait_duration_ms_count{cache_lock_acquired="false"}[5m]) /
+rate(cache_lock_wait_duration_ms_count[5m])
+```
+
+#### Keys Deleted by SCAN Invalidation (v1.3.0)
+```promql
+increase(cache_scan_deleted_keys_total[1h])
+```
+
+#### Average Bulk Batch Size (v1.3.0)
+```promql
+rate(cache_batch_size_keys_sum{cache_operation="get"}[5m]) /
+rate(cache_batch_size_keys_count{cache_operation="get"}[5m])
 ```
 
 ---
@@ -612,6 +659,48 @@ rate(cache_entity_misses_total{entity="Company"}[5m])
       }
     }
   ]
+}
+```
+
+#### Panel 5: Lock Wait Duration P95 (v1.3.0)
+```json
+{
+  "title": "Stampede Lock Wait P95",
+  "type": "timeseries",
+  "targets": [{
+    "expr": "histogram_quantile(0.95, rate(cache_lock_wait_duration_ms_bucket[5m]))",
+    "legendFormat": "P95 lock wait (ms)"
+  }]
+}
+```
+
+#### Panel 6: Bulk Operation Batch Sizes (v1.3.0)
+```json
+{
+  "title": "Batch Size P99 (GetMany / SetMany)",
+  "type": "timeseries",
+  "targets": [
+    {
+      "expr": "histogram_quantile(0.99, rate(cache_batch_size_keys_bucket{cache_operation=\"get\"}[5m]))",
+      "legendFormat": "GetMany P99"
+    },
+    {
+      "expr": "histogram_quantile(0.99, rate(cache_batch_size_keys_bucket{cache_operation=\"set\"}[5m]))",
+      "legendFormat": "SetMany P99"
+    }
+  ]
+}
+```
+
+#### Panel 7: SCAN Invalidation Impact (v1.3.0)
+```json
+{
+  "title": "SCAN Deletions per Minute",
+  "type": "stat",
+  "targets": [{
+    "expr": "rate(cache_scan_deleted_keys_total[1m]) * 60",
+    "legendFormat": "Keys deleted/min"
+  }]
 }
 ```
 
@@ -823,12 +912,13 @@ public record GetCompanyQuery(int Id) : IRequest<Company?>, ICacheable
 ```
 
 ### Issue: Prometheus not showing metrics
-**Solution:** Verify exporter is registered
+**Solution:** Verify both meters are registered
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
-        metrics.AddMeter("TheTechLoop.HybridCache.Effectiveness");  // ← Required
+        metrics.AddMeter("TheTechLoop.Cache");                  // ← Core operational metrics
+        metrics.AddMeter("TheTechLoop.Cache.Effectiveness");    // ← Per-entity tracking
         metrics.AddPrometheusExporter();
     });
 
@@ -840,12 +930,13 @@ app.MapPrometheusScrapingEndpoint("/metrics");  // ← Required
 ## Summary
 
 Performance Monitoring in CORA.OrganizationService provides:
-- **Per-entity cache effectiveness** tracking
+- **Per-entity cache effectiveness** tracking (hit rate, latency, size)
 - **Data-driven TTL optimization** (not guessing)
 - **Identify poor caching candidates** (< 70% hit rate)
 - **Capacity planning** with memory usage estimates
 - **Prometheus/Grafana integration** for dashboards
 - **Actionable insights** for cache strategy
+- **Operational visibility** (v1.3.0): lock wait time, bulk batch size, SCAN invalidation duration and deleted key count
 
 **Real Results from CORA.OrganizationService:**
 ```

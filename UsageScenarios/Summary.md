@@ -310,11 +310,11 @@ builder.Services.AddTheTechLoopCacheWarmup();
 
 | Scenario | Multi-Level | Tagging | Compression | Streaming | Warming | Metrics |
 |----------|-------------|---------|-------------|-----------|---------|---------|
-| 1. CQRS | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ |
+| 1. CQRS | ✅ | ➖ | ➖ | ➖ | ➖ | ✅ |
 | 2. Tagging | ➖ | ✅ | ➖ | ➖ | ➖ | ➖ |
 | 3. Session | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ |
 | 4. Compression | ➖ | ➖ | ✅ | ➖ | ➖ | ➖ |
-| 5. Streams | ➖ | ➖ | ➖ | ✅ | ➖ | ➖ |
+| 5. Streams | ➖ | ➖ | ➖ | ✅ | ➖ | ✅ |
 | 6. Warming | ➖ | ➖ | ➖ | ➖ | ✅ | ➖ |
 | 7. Metrics | ➖ | ➖ | ➖ | ➖ | ➖ | ✅ |
 | 8. Simple | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ |
@@ -324,6 +324,8 @@ builder.Services.AddTheTechLoopCacheWarmup();
 Legend:
 - ✅ Primary feature
 - ➖ Can be added
+
+> **Note:** As of v1.3.0, operational metrics (`cache.lock.wait_duration`, `cache.batch.size`, `cache.scan.duration`, `cache.scan.deleted_keys`) are always emitted — no configuration required. `EnableEffectivenessMetrics` controls only the per-entity effectiveness tracking meter (`TheTechLoop.Cache.Effectiveness`).
 
 ---
 
@@ -340,11 +342,8 @@ Legend:
 
 ## 📝 Additional Resources
 
-- **README.md** — Project overview and features
-- **ADVANCED_FEATURES_SUMMARY.md** — Complete feature guide
-- **ADVANCED_FEATURES_QUICK_REFERENCE.md** — Quick start
-- **UPGRADE_GUIDE.md** — Migration and testing
-- **ANALYSIS_AND_IMPROVEMENTS.md** — Architecture deep-dive
+- **[../README.md](../README.md)** — Project overview, features, API reference, and architecture
+- **[../src/TheTechLoop.HybridCache.MediatR/README.md](../src/TheTechLoop.HybridCache.MediatR/README.md)** — MediatR pipeline behaviors guide
 
 ---
 
@@ -369,5 +368,5 @@ For questions or issues:
 ---
 
 
-**Version:** 1.1.0
+**Version:** 1.3.0  
 **Status:** Production-Ready ✅

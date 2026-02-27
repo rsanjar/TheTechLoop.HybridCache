@@ -17,7 +17,7 @@ Enterprise-grade distributed Redis caching library for .NET microservices with p
 ### Core Caching
 - **Multi-Level Caching** — L1 in-memory + L2 Redis for optimal latency (1-5ms reads)
 - **Distributed Locking** — Prevent cache stampede with Redis-based locks
-- **Circuit Breaker** — Graceful degradation when Redis is unavailable
+- **Circuit Breaker** — Lock-free graceful degradation when Redis is unavailable (atomic `Interlocked` operations)
 - **Service-Scoped Keys** — Automatic key prefixing per microservice
 - **Cache Versioning** — Bump version on breaking DTO changes
 
@@ -62,7 +62,7 @@ Or via project reference:
 **Requirements:**
 - .NET 10 or higher
 - Redis 6.0+ (7.0+ recommended for Streams)
-- StackExchange.Redis 2.8+
+- StackExchange.Redis 2.11+
 
 ---
 
@@ -568,22 +568,24 @@ public class GetDealershipByIdQueryHandler : IRequestHandler<GetDealershipByIdQu
 ```csharp
 public interface ICacheService
 {
-    // Get or create with factory
-    Task<T?> GetOrCreateAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiration, CancellationToken ct = default);
+    // Get or create with factory (stampede-protected)
+    Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiration, CancellationToken ct = default);
 
     // Direct get
     Task<T?> GetAsync<T>(string key, CancellationToken ct = default);
 
     // Direct set
-    Task SetAsync<T>(string key, T value, TimeSpan expiration, CancellationToken ct = default);
+    Task SetAsync<T>(string key, T value, TimeSpan? expiration = null, CancellationToken ct = default);
     Task SetAsync<T>(string key, T value, CacheEntryOptions options, CancellationToken ct = default);
+
+    // Bulk operations
+    Task<Dictionary<string, T?>> GetManyAsync<T>(IEnumerable<string> keys, CancellationToken ct = default);
+    Task SetManyAsync<T>(Dictionary<string, T> items, TimeSpan? expiration = null, CancellationToken ct = default);
 
     // Remove operations
     Task RemoveAsync(string key, CancellationToken ct = default);
     Task RemoveByPrefixAsync(string keyPrefix, CancellationToken ct = default);
-
-    // Distributed locking
-    Task<T?> GetOrCreateWithLockAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiration, TimeSpan lockTimeout, CancellationToken ct = default);
+    Task RefreshAsync(string key, CancellationToken ct = default);
 }
 ```
 
@@ -627,15 +629,30 @@ All metrics are recorded automatically. No manual instrumentation needed.
 
 ### Built-in Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `cache.hits` | Counter | Total cache hits |
-| `cache.misses` | Counter | Total cache misses |
-| `cache.errors` | Counter | Redis exceptions |
-| `cache.evictions` | Counter | Explicit removals |
-| `cache.duration` | Histogram | Operation latency (ms) |
-| `cache.size` | Histogram | Cached value size (bytes) |
-| `cache.effectiveness.hit_rate` | Gauge | Hit rate per entity type |
+**Meter: `TheTechLoop.Cache`** (core operations)
+
+| Metric | Type | Tags | Description |
+|--------|------|------|-------------|
+| `cache.hits` | Counter | `cache.key_prefix`, `cache.level` | Total cache hits |
+| `cache.misses` | Counter | `cache.key_prefix` | Total cache misses |
+| `cache.errors` | Counter | `cache.key_prefix` | Redis exceptions |
+| `cache.evictions` | Counter | `cache.key_prefix` | Explicit removals |
+| `cache.circuit_breaker.bypasses` | Counter | — | Requests bypassed due to open circuit |
+| `cache.duration` | Histogram (ms) | `cache.operation`, `cache.level` | Operation latency |
+| `cache.lock.wait_duration` | Histogram (ms) | `cache.lock.acquired` | Stampede-lock wait time |
+| `cache.batch.size` | Histogram (keys) | `cache.operation` | Keys per `GetManyAsync`/`SetManyAsync` call |
+| `cache.scan.duration` | Histogram (ms) | — | Prefix SCAN deletion duration |
+| `cache.scan.deleted_keys` | Counter | — | Keys removed by SCAN invalidation |
+
+**Meter: `TheTechLoop.Cache.Effectiveness`** (per-entity tracking, requires `EnableEffectivenessMetrics: true`)
+
+| Metric | Type | Tags | Description |
+|--------|------|------|-------------|
+| `cache.entity.hits` | Counter | `entity` | Cache hits per entity type |
+| `cache.entity.misses` | Counter | `entity` | Cache misses per entity type |
+| `cache.entity.latency` | Histogram (ms) | `entity` | Access latency per entity |
+| `cache.entity.size` | Histogram (bytes) | `entity` | Cached payload size per entity |
+| `cache.entity.hit_rate` | Gauge (ratio) | `entity` | Live hit rate per entity type |
 
 ### Setup — Prometheus
 
@@ -643,7 +660,8 @@ All metrics are recorded automatically. No manual instrumentation needed.
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
-        metrics.AddMeter("TheTechLoop.HybridCache");
+        metrics.AddMeter("TheTechLoop.Cache");
+        metrics.AddMeter("TheTechLoop.Cache.Effectiveness"); // if EnableEffectivenessMetrics: true
         metrics.AddPrometheusExporter();
     });
 
@@ -653,13 +671,18 @@ app.MapPrometheusScrapingEndpoint("/metrics");
 ### CLI — dotnet-counters
 
 ```bash
-dotnet counters monitor --process-id <PID> --counters TheTechLoop.HybridCache
+dotnet counters monitor --process-id <PID> --counters TheTechLoop.Cache
 
-[TheTechLoop.HybridCache]
-    cache.hits (Count / 1 sec)           12
-    cache.misses (Count / 1 sec)          3
-    cache.duration (ms) P50             0.45
-    cache.duration (ms) P95             2.1
+[TheTechLoop.Cache]
+    cache.hits (Count / 1 sec)                12
+    cache.misses (Count / 1 sec)               3
+    cache.circuit_breaker.bypasses (Count)     0
+    cache.duration (ms) P50                 0.45
+    cache.duration (ms) P95                 2.10
+    cache.lock.wait_duration (ms) P95        8.0
+    cache.batch.size ({keys}) P99            500
+    cache.scan.duration (ms) P99            42.0
+    cache.scan.deleted_keys (Count / 1 sec)    0
 ```
 
 ---
@@ -717,40 +740,49 @@ WRITE PATH (Command)
 ```
 TheTechLoop.HybridCache/
 ├── Abstractions/
-│   ├── ICacheable.cs                       # Marker for auto-cached queries
-│   ├── ICacheInvalidatable.cs              # Marker for auto-invalidating commands
 │   ├── ICacheService.cs                    # Core cache contract
-│   ├── ICacheInvalidationPublisher.cs      # Cross-service Pub/Sub
-│   ├── ICacheTagService.cs                 # Cache tagging
-│   └── IDistributedLock.cs                 # Stampede prevention
-├── Behaviors/
-│   ├── CachingBehavior.cs                  # MediatR read-path auto-cache
-│   └── CacheInvalidationBehavior.cs        # MediatR write-path auto-invalidate
+│   ├── ICacheInvalidationPublisher.cs      # Cross-service Pub/Sub contract
+│   ├── IDistributedLock.cs                 # Stampede-prevention lock contract
+│   └── CacheEntryOptions.cs               # Absolute/sliding expiration options + tags
+├── Compression/
+│   └── CompressedCacheService.cs          # ICacheService decorator: transparent GZip
 ├── Configuration/
-│   └── CacheConfig.cs                     # Full config
+│   └── CacheConfig.cs                     # Full configuration model
 ├── Extensions/
 │   └── CacheServiceCollectionExtensions.cs # DI registration
 ├── Keys/
-│   └── CacheKeyBuilder.cs                 # Service-scoped, versioned keys
+│   └── CacheKeyBuilder.cs                 # Service-scoped, versioned keys + sanitization
 ├── Metrics/
-│   ├── CacheMetrics.cs                    # OpenTelemetry counters
-│   └── CacheEffectivenessMetrics.cs       # Per-entity tracking
+│   ├── CacheMetrics.cs                    # OpenTelemetry counters/histograms (10 instruments)
+│   └── CacheEffectivenessMetrics.cs       # Per-entity hit rate / latency / size tracking
+├── Serialization/
+│   └── CacheJsonOptions.cs                # Resilient JSON options (null, enum, camelCase)
 ├── Services/
 │   ├── RedisCacheService.cs               # Core Redis implementation
 │   ├── MultiLevelCacheService.cs          # L1 Memory + L2 Redis
-│   ├── RedisDistributedLock.cs            # Redis distributed locking
-│   ├── RedisCacheInvalidationPublisher.cs # Pub/Sub publisher
+│   ├── RedisDistributedLock.cs            # Redis SET NX distributed lock
+│   ├── RedisCacheInvalidationPublisher.cs # Pub/Sub key & prefix publisher
 │   ├── CacheInvalidationSubscriber.cs     # Background Pub/Sub consumer
-│   ├── StreamInvalidationPublisher.cs     # Redis Streams publisher
-│   ├── StreamInvalidationSubscriber.cs    # Redis Streams consumer
-│   ├── CacheTagService.cs                 # Tagging implementation
-│   ├── CircuitBreakerState.cs             # Thread-safe circuit breaker
-│   └── NoOpCacheService.cs               # No-op when disabled
+│   ├── CircuitBreakerState.cs             # Lock-free circuit breaker (Interlocked)
+│   └── NoOpCacheService.cs               # No-op implementation when disabled
+├── Streams/
+│   └── CacheInvalidationStreamConsumer.cs # Redis Streams consumer + stream publisher
+├── Tagging/
+│   └── RedisCacheTagService.cs            # ICacheTagService + Redis Sets implementation
 ├── Warming/
-│   ├── ICacheWarmupStrategy.cs            # Warmup strategy contract
-│   └── CacheWarmupService.cs              # Background warmup service
-├── README.md
+│   └── CacheWarmupService.cs              # ICacheWarmupStrategy + background warmup
 └── TheTechLoop.HybridCache.csproj
+
+TheTechLoop.HybridCache.MediatR/
+├── Abstractions/
+│   ├── ICacheable.cs                      # Marker for auto-cached queries
+│   └── ICacheInvalidatable.cs             # Marker for auto-invalidating commands
+├── Behaviors/
+│   ├── CachingBehavior.cs                 # MediatR read-path auto-cache behavior
+│   └── CacheInvalidationBehavior.cs       # MediatR write-path auto-invalidate behavior
+├── Extensions/
+│   └── MediatRCacheServiceCollectionExtensions.cs # AddTheTechLoopCacheBehaviors()
+└── TheTechLoop.HybridCache.MediatR.csproj
 ```
 
 ---
@@ -803,5 +835,16 @@ For questions or issues:
 
 ---
 
+## 📝 What's New in v1.3.0
+
+- **New metrics** — Added `cache.lock.wait_duration`, `cache.batch.size`, `cache.scan.duration`, and `cache.scan.deleted_keys` instruments for full operational visibility
+- **Lock-free circuit breaker** — `CircuitBreakerState` now uses `Interlocked` + `Volatile` atomic operations — no monitor contention on hot paths
+- **SCAN metrics in invalidation subscribers** — Both `CacheInvalidationSubscriber` (Pub/Sub) and `CacheInvalidationStreamConsumer` (Streams) now record scan duration and deleted key count
+- **Compression fix** — `CompressedCacheService` correctly keeps the underlying `MemoryStream` open during GZip serialization (`leaveOpen: true`)
+- **Near-100% test coverage** — 174 tests across all services, behaviors, metrics, compression, serialization, warmup, and hardening scenarios
+
+---
+
+**Version:** 1.3.0  
 **Status:** Production-Ready ✅  
 

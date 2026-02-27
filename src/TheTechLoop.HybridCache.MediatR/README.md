@@ -220,6 +220,15 @@ builder.Services.AddMediatR(cfg =>
 // 5. MediatR cache behaviors (this package)
 builder.Services.AddTheTechLoopCacheBehaviors();
 
+// 6. Optional: OpenTelemetry metrics
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics.AddMeter("TheTechLoop.Cache");                  // Core metrics
+        metrics.AddMeter("TheTechLoop.Cache.Effectiveness");    // Per-entity tracking
+        metrics.AddPrometheusExporter();
+    });
+
 var app = builder.Build();
 app.Run();
 ```
@@ -240,7 +249,7 @@ app.Run();
 ## Requirements
 
 - .NET 10 or higher
-- [TheTechLoop.HybridCache](https://www.nuget.org/packages/TheTechLoop.HybridCache) (core cache library)
+- [TheTechLoop.HybridCache](https://www.nuget.org/packages/TheTechLoop.HybridCache) 1.3.0+ (core cache library)
 - [MediatR](https://www.nuget.org/packages/MediatR) 12.x
 
 ---
