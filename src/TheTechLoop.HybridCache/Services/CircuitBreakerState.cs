@@ -1,16 +1,16 @@
 namespace TheTechLoop.HybridCache.Services;
 
 /// <summary>
-/// Thread-safe circuit breaker state machine for cache resilience.
+/// Lock-free circuit breaker state machine for cache resilience.
 /// Opens after consecutive failures; auto-closes after a cooldown period.
+/// Uses atomic operations to avoid lock contention on hot cache paths.
 /// </summary>
 internal sealed class CircuitBreakerState
 {
     private readonly int _breakDurationSeconds;
     private readonly int _failureThreshold;
     private int _consecutiveFailures;
-    private DateTime _lastFailureUtc = DateTime.MinValue;
-    private readonly Lock _lock = new();
+    private long _lastFailureUtcTicks = DateTime.MinValue.Ticks;
 
     public CircuitBreakerState(int breakDurationSeconds, int failureThreshold)
     {
@@ -26,37 +26,31 @@ internal sealed class CircuitBreakerState
     {
         get
         {
-            lock (_lock)
+            var failures = Volatile.Read(ref _consecutiveFailures);
+            if (failures < _failureThreshold)
+                return false;
+
+            // Auto-close after break duration (half-open → let one request through)
+            var lastFailureTicks = Interlocked.Read(ref _lastFailureUtcTicks);
+            if (DateTime.UtcNow.Ticks - lastFailureTicks > TimeSpan.FromSeconds(_breakDurationSeconds).Ticks)
             {
-                if (_consecutiveFailures < _failureThreshold)
-                    return false;
-
-                // Auto-close after break duration (half-open → let one request through)
-                if (DateTime.UtcNow - _lastFailureUtc > TimeSpan.FromSeconds(_breakDurationSeconds))
-                {
-                    _consecutiveFailures = 0;
-                    return false;
-                }
-
-                return true;
+                // Reset via compare-exchange so only one thread transitions to half-open
+                Interlocked.CompareExchange(ref _consecutiveFailures, 0, failures);
+                return false;
             }
+
+            return true;
         }
     }
 
     public void RecordFailure()
     {
-        lock (_lock)
-        {
-            _consecutiveFailures++;
-            _lastFailureUtc = DateTime.UtcNow;
-        }
+        Interlocked.Increment(ref _consecutiveFailures);
+        Interlocked.Exchange(ref _lastFailureUtcTicks, DateTime.UtcNow.Ticks);
     }
 
     public void RecordSuccess()
     {
-        lock (_lock)
-        {
-            _consecutiveFailures = 0;
-        }
+        Interlocked.Exchange(ref _consecutiveFailures, 0);
     }
 }

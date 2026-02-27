@@ -4,7 +4,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
+using System.Diagnostics;
+using System.Threading.Channels;
 using TheTechLoop.HybridCache.Configuration;
+using TheTechLoop.HybridCache.Metrics;
 
 namespace TheTechLoop.HybridCache.Services;
 
@@ -12,6 +15,10 @@ namespace TheTechLoop.HybridCache.Services;
 /// Background service that subscribes to Redis Pub/Sub cache invalidation events.
 /// Automatically removes invalidated keys from both L1 (memory) and L2 (Redis) caches.
 /// Each microservice instance runs its own subscriber to stay in sync.
+/// <para>
+/// Messages are dispatched through a bounded channel with a single consumer,
+/// providing backpressure under bursts without unbounded task creation.
+/// </para>
 /// </summary>
 public class CacheInvalidationSubscriber : BackgroundService
 {
@@ -19,8 +26,17 @@ public class CacheInvalidationSubscriber : BackgroundService
     private readonly IDistributedCache _distributedCache;
     private readonly IMemoryCache? _memoryCache;
     private readonly ILogger<CacheInvalidationSubscriber> _logger;
+    private readonly CacheMetrics _metrics;
     private readonly string _channel;
     private readonly string _instanceName;
+
+    private readonly Channel<string> _messageChannel = Channel.CreateBounded<string>(
+        new BoundedChannelOptions(1024)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false
+        });
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CacheInvalidationSubscriber"/> class.
@@ -35,11 +51,13 @@ public class CacheInvalidationSubscriber : BackgroundService
         IDistributedCache distributedCache,
         ILogger<CacheInvalidationSubscriber> logger,
         IOptions<CacheConfig> config,
+        CacheMetrics metrics,
         IMemoryCache? memoryCache = null)
     {
         _redis = redis;
         _distributedCache = distributedCache;
         _logger = logger;
+        _metrics = metrics;
         _memoryCache = memoryCache;
         _channel = config.Value.InvalidationChannel;
         _instanceName = config.Value.InstanceName ?? string.Empty;
@@ -57,28 +75,29 @@ public class CacheInvalidationSubscriber : BackgroundService
 
             await subscriber.SubscribeAsync(
                 RedisChannel.Literal(_channel),
-                (channel, message) =>
+                (_, message) =>
                 {
-                    // Fire-and-forget with proper error handling
-                    _ = Task.Run(async () =>
+                    if (!_messageChannel.Writer.TryWrite(message.ToString()))
                     {
-                        try
-                        {
-                            var payload = message.ToString();
-                            await HandleInvalidationAsync(payload, stoppingToken);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Error processing cache invalidation message: {Message}", message);
-                        }
-                    }, stoppingToken);
+                        _logger.LogWarning("Invalidation channel full, dropped oldest message");
+                    }
                 });
 
             _logger.LogInformation(
                 "Cache invalidation subscriber started on channel: {Channel}", _channel);
 
-            // Keep alive until cancellation
-            await Task.Delay(Timeout.Infinite, stoppingToken);
+            // Single consumer loop — processes messages sequentially
+            await foreach (var payload in _messageChannel.Reader.ReadAllAsync(stoppingToken))
+            {
+                try
+                {
+                    await HandleInvalidationAsync(payload, stoppingToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing cache invalidation message: {Message}", payload);
+                }
+            }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -97,12 +116,12 @@ public class CacheInvalidationSubscriber : BackgroundService
             var key = payload[4..];
             _memoryCache?.Remove(key);
             await _distributedCache.RemoveAsync(key, ct);
-            _logger.LogInformation("Invalidated cache key: {Key}", key);
+            _logger.LogDebug("Invalidated cache key: {Key}", key);
         }
         else if (payload.StartsWith("prefix:"))
         {
             var prefix = payload[7..];
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Received prefix invalidation: {Prefix}. " +
                 "L1 cache cleared for matching entries if tracked. " +
                 "L2 prefix deletion requires SCAN via IConnectionMultiplexer.",
@@ -118,30 +137,42 @@ public class CacheInvalidationSubscriber : BackgroundService
         try
         {
             var db = _redis.GetDatabase();
-            var server = _redis.GetServers().FirstOrDefault();
-
-            if (server is null)
-                return;
+            var scanSw = Stopwatch.StartNew();
 
             // IDistributedCache automatically prepends InstanceName when writing keys,
             // so raw IConnectionMultiplexer SCAN must include it to match the full Redis key.
             var pattern = $"{_instanceName}{prefix}*";
-            var keys = new List<RedisKey>();
+            var deletedCount = 0L;
 
-            await foreach (var key in server.KeysAsync(pattern: pattern).WithCancellation(ct))
+            // Iterate all connected primary/master endpoints for cluster-awareness.
+            // In standalone setups this yields a single server; in clusters it covers all shards.
+            foreach (var server in _redis.GetServers().Where(s => s.IsConnected && !s.IsReplica))
             {
-                keys.Add(key);
+                var keys = new List<RedisKey>();
 
-                // Batch delete in chunks
-                if (keys.Count >= 100)
+                await foreach (var key in server.KeysAsync(pattern: pattern).WithCancellation(ct))
+                {
+                    keys.Add(key);
+
+                    // Batch delete in chunks
+                    if (keys.Count >= 100)
+                    {
+                        await db.KeyDeleteAsync([.. keys]);
+                        deletedCount += keys.Count;
+                        keys.Clear();
+                    }
+                }
+
+                if (keys.Count > 0)
                 {
                     await db.KeyDeleteAsync([.. keys]);
-                    keys.Clear();
+                    deletedCount += keys.Count;
                 }
             }
 
-            if (keys.Count > 0)
-                await db.KeyDeleteAsync([.. keys]);
+            scanSw.Stop();
+            _metrics.RecordScanDeletion(scanSw.Elapsed.TotalMilliseconds, deletedCount);
+            _logger.LogDebug("Prefix SCAN deletion complete: {Prefix}, deleted {Count} keys", prefix, deletedCount);
         }
         catch (Exception ex)
         {

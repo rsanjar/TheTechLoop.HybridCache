@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.IO.Compression;
 
 namespace TheTechLoop.HybridCache.Configuration;
 
@@ -80,6 +81,12 @@ public sealed class CacheConfig
     public int CompressionThresholdBytes { get; set; } = 1024;
 
     /// <summary>
+    /// GZip compression level. Use Fastest for low-latency caching,
+    /// Optimal for balanced compression, or SmallestSize when memory is critical.
+    /// </summary>
+    public CompressionLevel CompressionLevel { get; set; } = CompressionLevel.Fastest;
+
+    /// <summary>
     /// Enable cache tagging for group invalidation.
     /// </summary>
     public bool EnableTagging { get; set; }
@@ -93,6 +100,26 @@ public sealed class CacheConfig
     /// Enable entity-level cache effectiveness metrics.
     /// </summary>
     public bool EnableEffectivenessMetrics { get; set; } = true;
+
+    /// <summary>
+    /// Maximum number of concurrent Redis operations in GetManyAsync/SetManyAsync.
+    /// Limits thread-pool pressure and Redis connection saturation under large batches.
+    /// </summary>
+    [Range(1, 1000)]
+    public int MaxBatchConcurrency { get; set; } = 50;
+
+    /// <summary>
+    /// Base delay in milliseconds for stampede-protection retry when a lock cannot be acquired.
+    /// Actual delay is jittered: [baseDelay .. baseDelay × 2) per attempt.
+    /// </summary>
+    [Range(10, 5000)]
+    public int StampedeRetryBaseDelayMs { get; set; } = 50;
+
+    /// <summary>
+    /// Maximum number of cache-poll retries when another instance holds the stampede lock.
+    /// </summary>
+    [Range(1, 20)]
+    public int StampedeRetryMaxAttempts { get; set; } = 3;
 }
 
 /// <summary>

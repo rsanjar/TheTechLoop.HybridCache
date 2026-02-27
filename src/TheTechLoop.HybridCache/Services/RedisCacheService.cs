@@ -96,26 +96,33 @@ public class RedisCacheService : ICacheService
             LogDebug("Cache miss for key: {Key}", key);
 
             // Stampede protection: acquire lock before populating
+            var lockSw = Stopwatch.StartNew();
             await using var lockHandle = await _lock.TryAcquireAsync(
                 $"lock:{key}", TimeSpan.FromSeconds(10), cancellationToken);
+            lockSw.Stop();
+            _metrics.RecordLockWait(lockSw.Elapsed.TotalMilliseconds, lockHandle is not null);
 
             if (lockHandle is null)
             {
-                // Another instance is populating; wait briefly and retry from cache
-                try
+                // Another instance is populating; poll cache with jittered backoff
+                for (var attempt = 0; attempt < _config.StampedeRetryMaxAttempts; attempt++)
                 {
-                    await Task.Delay(150, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    // If cancelled during wait, fall back to factory immediately
-                    return await factory();
-                }
+                    var jitteredDelay = GetJitteredDelay(_config.StampedeRetryBaseDelayMs, attempt);
 
-                cachedData = await _cache.GetStringAsync(key, cancellationToken);
+                    try
+                    {
+                        await Task.Delay(jitteredDelay, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return await factory();
+                    }
 
-                if (!string.IsNullOrEmpty(cachedData))
-                    return JsonSerializer.Deserialize<T>(cachedData, JsonOptions)!;
+                    cachedData = await _cache.GetStringAsync(key, cancellationToken);
+
+                    if (!string.IsNullOrEmpty(cachedData))
+                        return JsonSerializer.Deserialize<T>(cachedData, JsonOptions)!;
+                }
             }
 
             // Populate from source
@@ -266,26 +273,31 @@ public class RedisCacheService : ICacheService
         if (!keyList.Any())
             return result;
 
+        _metrics.RecordBatchSize(keyList.Count, "get");
+
         try
         {
-            // Pipeline multiple GET operations
-            var tasks = keyList.Select(key => _cache.GetStringAsync(key, cancellationToken)).ToArray();
-            var values = await Task.WhenAll(tasks);
-
-            for (int i = 0; i < keyList.Count; i++)
+            // Pipeline GET operations in bounded chunks to avoid Redis saturation
+            foreach (var chunk in keyList.Chunk(_config.MaxBatchConcurrency))
             {
-                var key = keyList[i];
-                var data = values[i];
+                var tasks = chunk.Select(key => _cache.GetStringAsync(key, cancellationToken)).ToArray();
+                var values = await Task.WhenAll(tasks);
 
-                if (!string.IsNullOrEmpty(data))
+                for (int i = 0; i < chunk.Length; i++)
                 {
-                    _metrics.RecordHit(key, 0);
-                    result[key] = JsonSerializer.Deserialize<T>(data, JsonOptions);
-                }
-                else
-                {
-                    _metrics.RecordMiss(key, 0);
-                    result[key] = default;
+                    var key = chunk[i];
+                    var data = values[i];
+
+                    if (!string.IsNullOrEmpty(data))
+                    {
+                        _metrics.RecordHit(key, 0);
+                        result[key] = JsonSerializer.Deserialize<T>(data, JsonOptions);
+                    }
+                    else
+                    {
+                        _metrics.RecordMiss(key, 0);
+                        result[key] = default;
+                    }
                 }
             }
 
@@ -306,6 +318,8 @@ public class RedisCacheService : ICacheService
         if (!_config.Enabled || IsCircuitOpen() || !items.Any())
             return;
 
+        _metrics.RecordBatchSize(items.Count, "set");
+
         try
         {
             var options = new DistributedCacheEntryOptions
@@ -313,17 +327,22 @@ public class RedisCacheService : ICacheService
                 AbsoluteExpirationRelativeToNow = expiration ?? TimeSpan.FromMinutes(_config.DefaultExpirationMinutes)
             };
 
-            // Pipeline multiple SET operations
-            var tasks = items
+            // Pipeline SET operations in bounded chunks to avoid Redis saturation
+            var validItems = items
                 .Where(kvp => kvp.Value is not null && !EqualityComparer<T>.Default.Equals(kvp.Value, default))
-                .Select(kvp =>
+                .ToArray();
+
+            foreach (var chunk in validItems.Chunk(_config.MaxBatchConcurrency))
+            {
+                var tasks = chunk.Select(kvp =>
                 {
                     var serialized = JsonSerializer.Serialize(kvp.Value, JsonOptions);
                     return _cache.SetStringAsync(kvp.Key, serialized, options, cancellationToken);
-                })
-                .ToArray();
+                }).ToArray();
 
-            await Task.WhenAll(tasks);
+                await Task.WhenAll(tasks);
+            }
+
             _circuitBreaker.RecordSuccess();
         }
         catch (Exception ex)
@@ -386,5 +405,17 @@ public class RedisCacheService : ICacheService
     {
         if (_config.EnableLogging)
             _logger.LogDebug(message, args);
+    }
+
+    /// <summary>
+    /// Returns a jittered delay for stampede-protection retries.
+    /// Delay grows exponentially (baseMs × 2^attempt) with random jitter
+    /// in [delay .. delay × 2) to avoid lock-step contention.
+    /// </summary>
+    private static TimeSpan GetJitteredDelay(int baseMs, int attempt)
+    {
+        var delayMs = baseMs * (1 << attempt);
+        var jitter = Random.Shared.Next(0, delayMs);
+        return TimeSpan.FromMilliseconds(delayMs + jitter);
     }
 }

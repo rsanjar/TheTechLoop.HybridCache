@@ -113,26 +113,34 @@ public class MultiLevelCacheService : ICacheService
         LogDebug("Cache miss (L1+L2) for key: {Key}", key);
 
         // Stampede protection
+        var lockSw = Stopwatch.StartNew();
         await using var lockHandle = await _lock.TryAcquireAsync(
             $"lock:{key}", TimeSpan.FromSeconds(10), cancellationToken);
+        lockSw.Stop();
+        _metrics.RecordLockWait(lockSw.Elapsed.TotalMilliseconds, lockHandle is not null);
 
         if (lockHandle is null)
         {
-            await Task.Delay(150, cancellationToken);
-
-            // Retry L1 then L2
-            if (_l1.TryGetValue(key, out T? retryValue) && retryValue is not null)
-                return retryValue;
-
-            try
+            // Poll L1/L2 with jittered backoff until populated or attempts exhausted
+            for (var attempt = 0; attempt < _config.StampedeRetryMaxAttempts; attempt++)
             {
-                var retryData = await _l2.GetStringAsync(key, cancellationToken);
-                if (!string.IsNullOrEmpty(retryData))
-                    return JsonSerializer.Deserialize<T>(retryData, JsonOptions)!;
-            }
-            catch
-            {
-                // Fall through to factory
+                var jitteredDelay = GetJitteredDelay(_config.StampedeRetryBaseDelayMs, attempt);
+                await Task.Delay(jitteredDelay, cancellationToken);
+
+                // Retry L1 then L2
+                if (_l1.TryGetValue(key, out T? retryValue) && retryValue is not null)
+                    return retryValue;
+
+                try
+                {
+                    var retryData = await _l2.GetStringAsync(key, cancellationToken);
+                    if (!string.IsNullOrEmpty(retryData))
+                        return JsonSerializer.Deserialize<T>(retryData, JsonOptions)!;
+                }
+                catch
+                {
+                    // Fall through to next attempt or factory
+                }
             }
         }
 
@@ -285,6 +293,9 @@ public class MultiLevelCacheService : ICacheService
             return result;
 
         var keyList = keys.ToList();
+
+        _metrics.RecordBatchSize(keyList.Count, "get");
+
         var missingKeys = new List<string>();
 
         // Check L1 first
@@ -297,30 +308,32 @@ public class MultiLevelCacheService : ICacheService
             else
             {
                 missingKeys.Add(key);
-                result[key] = default;
             }
         }
 
         // Check L2 for missing keys
-        if (missingKeys.Any() && !IsCircuitOpen())
+        if (missingKeys.Count > 0 && !IsCircuitOpen())
         {
             try
             {
-                var tasks = missingKeys.Select(k => _l2.GetStringAsync(k, cancellationToken)).ToArray();
-                var values = await Task.WhenAll(tasks);
-
-                for (int i = 0; i < missingKeys.Count; i++)
+                foreach (var chunk in missingKeys.Chunk(_config.MaxBatchConcurrency))
                 {
-                    var key = missingKeys[i];
-                    var data = values[i];
+                    var tasks = chunk.Select(k => _l2.GetStringAsync(k, cancellationToken)).ToArray();
+                    var values = await Task.WhenAll(tasks);
 
-                    if (!string.IsNullOrEmpty(data))
+                    for (int i = 0; i < chunk.Length; i++)
                     {
-                        var value = JsonSerializer.Deserialize<T>(data, JsonOptions);
-                        result[key] = value;
-                        // Promote to L1
-                        if (value is not null)
-                            SetL1(key, value);
+                        var key = chunk[i];
+                        var data = values[i];
+
+                        if (!string.IsNullOrEmpty(data))
+                        {
+                            var value = JsonSerializer.Deserialize<T>(data, JsonOptions);
+                            result[key] = value;
+                            // Promote to L1
+                            if (value is not null)
+                                SetL1(key, value);
+                        }
                     }
                 }
             }
@@ -328,6 +341,12 @@ public class MultiLevelCacheService : ICacheService
             {
                 _logger.LogError(ex, "Error retrieving multiple keys from L2 cache");
             }
+        }
+
+        // Populate defaults for keys not found in either level
+        foreach (var key in missingKeys)
+        {
+            result.TryAdd(key, default);
         }
 
         return result;
@@ -338,6 +357,8 @@ public class MultiLevelCacheService : ICacheService
     {
         if (!_config.Enabled || !items.Any())
             return;
+
+        _metrics.RecordBatchSize(items.Count, "set");
 
         // Set in L1
         foreach (var kvp in items)
@@ -356,16 +377,21 @@ public class MultiLevelCacheService : ICacheService
                     AbsoluteExpirationRelativeToNow = expiration ?? TimeSpan.FromMinutes(_config.DefaultExpirationMinutes)
                 };
 
-                var tasks = items
+                var validItems = items
                     .Where(kvp => kvp.Value is not null && !EqualityComparer<T>.Default.Equals(kvp.Value, default))
-                    .Select(kvp =>
+                    .ToArray();
+
+                foreach (var chunk in validItems.Chunk(_config.MaxBatchConcurrency))
+                {
+                    var tasks = chunk.Select(kvp =>
                     {
                         var serialized = JsonSerializer.Serialize(kvp.Value, JsonOptions);
                         return _l2.SetStringAsync(kvp.Key, serialized, options, cancellationToken);
-                    })
-                    .ToArray();
+                    }).ToArray();
 
-                await Task.WhenAll(tasks);
+                    await Task.WhenAll(tasks);
+                }
+
                 _circuitBreaker.RecordSuccess();
             }
             catch (Exception ex)
@@ -441,5 +467,12 @@ public class MultiLevelCacheService : ICacheService
     {
         if (_config.EnableLogging)
             _logger.LogDebug(message, args);
+    }
+
+    private static TimeSpan GetJitteredDelay(int baseMs, int attempt)
+    {
+        var delayMs = baseMs * (1 << attempt);
+        var jitter = Random.Shared.Next(0, delayMs);
+        return TimeSpan.FromMilliseconds(delayMs + jitter);
     }
 }

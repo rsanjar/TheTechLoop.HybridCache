@@ -4,7 +4,9 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
+using System.Diagnostics;
 using TheTechLoop.HybridCache.Configuration;
+using TheTechLoop.HybridCache.Metrics;
 
 namespace TheTechLoop.HybridCache.Streams;
 
@@ -22,6 +24,7 @@ public class CacheInvalidationStreamConsumer : BackgroundService
     private readonly IDistributedCache _distributedCache;
     private readonly IMemoryCache? _memoryCache;
     private readonly ILogger<CacheInvalidationStreamConsumer> _logger;
+    private readonly CacheMetrics _metrics;
     private readonly string _streamName;
     private readonly string _consumerGroup;
     private readonly string _consumerName;
@@ -40,12 +43,14 @@ public class CacheInvalidationStreamConsumer : BackgroundService
         IDistributedCache distributedCache,
         ILogger<CacheInvalidationStreamConsumer> logger,
         IOptions<CacheConfig> config,
+        CacheMetrics metrics,
         IMemoryCache? memoryCache = null)
     {
         _redis = redis;
         _distributedCache = distributedCache;
         _memoryCache = memoryCache;
         _logger = logger;
+        _metrics = metrics;
 
         var serviceName = config.Value.ServiceName ?? "default";
         _instanceName = config.Value.InstanceName ?? string.Empty;
@@ -147,14 +152,14 @@ public class CacheInvalidationStreamConsumer : BackgroundService
                 {
                     _memoryCache?.Remove(key);
                     await _distributedCache.RemoveAsync(key, ct);
-                    _logger.LogInformation("Invalidated cache key: {Key}", key);
+                    _logger.LogDebug("Invalidated cache key: {Key}", key);
                 }
                 break;
 
             case "prefix":
                 if (values.TryGetValue("prefix", out var prefix))
                 {
-                    _logger.LogInformation("Received prefix invalidation: {Prefix}", prefix);
+                    _logger.LogDebug("Received prefix invalidation: {Prefix}", prefix);
                     await RemoveByPrefixViaScanAsync(prefix, ct);
                 }
                 break;
@@ -162,7 +167,7 @@ public class CacheInvalidationStreamConsumer : BackgroundService
             case "tag":
                 if (values.TryGetValue("tag", out var tag))
                 {
-                    _logger.LogInformation("Received tag invalidation: {Tag}", tag);
+                    _logger.LogDebug("Received tag invalidation: {Tag}", tag);
                     // Tag invalidation requires ICacheTagService
                     // Implementation deferred to consumer
                 }
@@ -175,33 +180,40 @@ public class CacheInvalidationStreamConsumer : BackgroundService
         try
         {
             var db = _redis.GetDatabase();
-            var server = _redis.GetServers().FirstOrDefault();
-
-            if (server is null)
-                return;
+            var scanSw = Stopwatch.StartNew();
 
             // IDistributedCache automatically prepends InstanceName when writing keys,
             // so raw IConnectionMultiplexer SCAN must include it to match the full Redis key.
             var pattern = $"{_instanceName}{prefix}*";
-            var keys = new List<RedisKey>();
+            var deletedCount = 0L;
 
-            await foreach (var key in server.KeysAsync(pattern: pattern).WithCancellation(ct))
+            // Iterate all connected primary/master endpoints for cluster-awareness.
+            foreach (var server in _redis.GetServers().Where(s => s.IsConnected && !s.IsReplica))
             {
-                keys.Add(key);
+                var keys = new List<RedisKey>();
 
-                if (keys.Count >= 100)
+                await foreach (var key in server.KeysAsync(pattern: pattern).WithCancellation(ct))
+                {
+                    keys.Add(key);
+
+                    if (keys.Count >= 100)
+                    {
+                        await db.KeyDeleteAsync(keys.ToArray());
+                        deletedCount += keys.Count;
+                        keys.Clear();
+                    }
+                }
+
+                if (keys.Any())
                 {
                     await db.KeyDeleteAsync(keys.ToArray());
-                    keys.Clear();
+                    deletedCount += keys.Count;
                 }
             }
 
-            if (keys.Any())
-            {
-                await db.KeyDeleteAsync(keys.ToArray());
-            }
-
-            _logger.LogInformation("Deleted keys matching prefix: {Prefix}", prefix);
+            scanSw.Stop();
+            _metrics.RecordScanDeletion(scanSw.Elapsed.TotalMilliseconds, deletedCount);
+            _logger.LogDebug("Prefix SCAN deletion complete: {Prefix}, deleted {Count} keys", prefix, deletedCount);
         }
         catch (Exception ex)
         {

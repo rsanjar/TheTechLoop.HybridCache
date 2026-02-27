@@ -120,7 +120,7 @@ public static class CacheServiceCollectionExtensions
                     services.AddSingleton<ICacheService>(sp =>
                     {
                         var inner = ActivatorUtilities.CreateInstance<RedisCacheService>(sp);
-                        return new CompressedCacheService(inner, config.CompressionThresholdBytes);
+                        return new CompressedCacheService(inner, config.CompressionThresholdBytes, config.CompressionLevel);
                     });
                 }
             }

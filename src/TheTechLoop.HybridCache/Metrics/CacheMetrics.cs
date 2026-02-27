@@ -20,6 +20,10 @@ public sealed class CacheMetrics
     private readonly Counter<long> _evictions;
     private readonly Counter<long> _circuitBreakerBypasses;
     private readonly Histogram<double> _duration;
+    private readonly Histogram<double> _lockWaitDuration;
+    private readonly Histogram<long> _batchSize;
+    private readonly Histogram<double> _scanDuration;
+    private readonly Counter<long> _scanDeletedKeys;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CacheMetrics"/> class.
@@ -53,6 +57,25 @@ public sealed class CacheMetrics
             "cache.duration",
             unit: "ms",
             description: "Cache operation duration in milliseconds");
+
+        _lockWaitDuration = meter.CreateHistogram<double>(
+            "cache.lock.wait_duration",
+            unit: "ms",
+            description: "Time spent waiting for stampede-protection lock acquisition");
+
+        _batchSize = meter.CreateHistogram<long>(
+            "cache.batch.size",
+            unit: "{keys}",
+            description: "Number of keys in bulk GetMany/SetMany operations");
+
+        _scanDuration = meter.CreateHistogram<double>(
+            "cache.scan.duration",
+            unit: "ms",
+            description: "Duration of prefix SCAN-based key deletion operations");
+
+        _scanDeletedKeys = meter.CreateCounter<long>(
+            "cache.scan.deleted_keys",
+            description: "Total number of keys deleted via prefix SCAN operations");
     }
 
     /// <summary>
@@ -113,6 +136,39 @@ public sealed class CacheMetrics
     public void RecordCircuitBreakerBypass()
     {
         _circuitBreakerBypasses.Add(1);
+    }
+
+    /// <summary>
+    /// Records the time spent waiting for a stampede-protection lock.
+    /// </summary>
+    /// <param name="durationMs">Wait duration in milliseconds</param>
+    /// <param name="acquired">Whether the lock was successfully acquired</param>
+    public void RecordLockWait(double durationMs, bool acquired)
+    {
+        _lockWaitDuration.Record(durationMs,
+            new KeyValuePair<string, object?>("cache.lock.acquired", acquired));
+    }
+
+    /// <summary>
+    /// Records the batch size for a bulk GetMany/SetMany operation.
+    /// </summary>
+    /// <param name="count">Number of keys in the batch</param>
+    /// <param name="operation">"get" or "set"</param>
+    public void RecordBatchSize(long count, string operation)
+    {
+        _batchSize.Record(count,
+            new KeyValuePair<string, object?>("cache.operation", operation));
+    }
+
+    /// <summary>
+    /// Records prefix SCAN deletion metrics.
+    /// </summary>
+    /// <param name="durationMs">Scan duration in milliseconds</param>
+    /// <param name="deletedCount">Number of keys deleted</param>
+    public void RecordScanDeletion(double durationMs, long deletedCount)
+    {
+        _scanDuration.Record(durationMs);
+        _scanDeletedKeys.Add(deletedCount);
     }
 
     /// <summary>
