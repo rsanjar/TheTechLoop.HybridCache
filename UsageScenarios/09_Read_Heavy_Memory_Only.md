@@ -79,22 +79,19 @@ dotnet add package TheTechLoop.HybridCache
 ```json
 {
   "TheTechLoopCache": {
+    "UseMemoryOnly": true,
+    "Enabled": true,
+    "ServiceName": "my-app",
+    "CacheVersion": "v1",
+    "DefaultExpirationMinutes": 60,
+    "EnableEffectivenessMetrics": true,
+
     "MemoryCache": {
-      "Enabled": true,
       "SizeLimit": 1024,
-      "CompactionPercentage": 0.25,
-      "ExpirationScanFrequency": "00:05:00"
-    },
-    "Redis": {
-      "Enabled": false
-    },
-    "DefaultAbsoluteExpiration": "01:00:00",
-    "DefaultSlidingExpiration": null,
-    "EnableCompression": false,
-    "CompressionThreshold": 1024,
-    "EnableEffectivenessMetrics": true
+      "DefaultExpirationSeconds": 30
+    }
   },
-  
+
   "Logging": {
     "LogLevel": {
       "TheTechLoop.HybridCache": "Information"
@@ -103,17 +100,19 @@ dotnet add package TheTechLoop.HybridCache
 }
 ```
 
+> **Note:** `Configuration` (Redis connection string) and `InstanceName` are **not required** when
+> `UseMemoryOnly: true` — they can be omitted entirely.
+
 #### Configuration Breakdown
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| `MemoryCache.Enabled` | `true` | Enable in-memory caching |
-| `Redis.Enabled` | `false` | Disable Redis entirely |
-| `SizeLimit` | `1024` | Max entries (use with `Size` in options) |
-| `CompactionPercentage` | `0.25` | Remove 25% of entries when limit hit |
-| `ExpirationScanFrequency` | `00:05:00` | Check for expired entries every 5 min |
-| `DefaultAbsoluteExpiration` | `01:00:00` | Default TTL: 1 hour |
-| `EnableEffectivenessMetrics` | `true` | Track hit rate (development) |
+| `UseMemoryOnly` | `true` | Routes all cache operations to `IMemoryCache` only — no Redis |
+| `Enabled` | `true` | Master cache switch |
+| `MemoryCache.SizeLimit` | `1024` | Max size units; each entry counts its `Size` toward this budget |
+| `MemoryCache.DefaultExpirationSeconds` | `30` | L1 TTL when no explicit expiration is passed |
+| `DefaultExpirationMinutes` | `60` | TTL used by `GetOrCreateAsync` when called without explicit expiration |
+| `EnableEffectivenessMetrics` | `true` | Track per-entity hit rate via `CacheEffectivenessMetrics` |
 
 ---
 
@@ -124,14 +123,9 @@ using TheTechLoop.HybridCache.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Register memory cache only
+// Single call — UseMemoryOnly:true in config activates MemoryOnlyCacheService automatically.
+// No AddTheTechLoopMultiLevelCache needed; no Redis packages required.
 builder.Services.AddTheTechLoopCache(builder.Configuration);
-
-// Optional: Add effectiveness metrics for development
-if (builder.Environment.IsDevelopment())
-{
-    builder.Services.AddTheTechLoopCacheEffectivenessMetrics();
-}
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -283,15 +277,10 @@ public class UserService : IUserService
     {
         var cacheKey = $"user:{userId}";
 
-        return await _cache.GetOrSetAsync(
+        return await _cache.GetOrCreateAsync(
             key: cacheKey,
-            factory: async () => await _repository.GetByIdAsync(userId, cancellationToken),
-            options: new CacheEntryOptions
-            {
-                AbsoluteExpiration = TimeSpan.FromMinutes(30),
-                Size = 1,
-                Priority = CacheItemPriority.High // Keep important data longer
-            },
+            factory: () => _repository.GetByIdAsync(userId, cancellationToken)!,
+            expiration: TimeSpan.FromMinutes(30),
             cancellationToken: cancellationToken
         );
     }
@@ -300,28 +289,23 @@ public class UserService : IUserService
     {
         var cacheKey = $"users:role:{role}";
 
-        return await _cache.GetOrSetAsync(
+        return await _cache.GetOrCreateAsync(
             key: cacheKey,
-            factory: async () => await _repository.GetByRoleAsync(role, cancellationToken),
-            options: new CacheEntryOptions
-            {
-                AbsoluteExpiration = TimeSpan.FromMinutes(10),
-                Size = 10, // Estimate
-                Priority = CacheItemPriority.Normal
-            },
+            factory: () => _repository.GetByRoleAsync(role, cancellationToken)!,
+            expiration: TimeSpan.FromMinutes(10),
             cancellationToken: cancellationToken
-        ) ?? new List<User>();
+        ) ?? [];
     }
 
     public async Task UpdateUserAsync(User user, CancellationToken cancellationToken = default)
     {
         await _repository.UpdateAsync(user, cancellationToken);
 
-        // Invalidate user-specific cache
+        // Invalidate user-specific cache entries
         await _cache.RemoveAsync($"user:{user.Id}", cancellationToken);
 
-        // Invalidate role-based lists
-        await _cache.RemovePatternAsync("users:role:*", cancellationToken);
+        // Note: RemoveByPrefixAsync is not supported in UseMemoryOnly mode.
+        // Invalidate role lists individually or use cache tagging (requires Redis).
     }
 }
 ```
@@ -434,11 +418,10 @@ builder.Services.AddHostedService<CacheWarmupHostedService>();
 ```json
 {
   "TheTechLoopCache": {
+    "UseMemoryOnly": true,
     "MemoryCache": {
-      "Enabled": true,
       "SizeLimit": 2048,
-      "CompactionPercentage": 0.20,
-      "ExpirationScanFrequency": "00:02:00"
+      "DefaultExpirationSeconds": 60
     }
   }
 }
@@ -584,26 +567,37 @@ public async Task<ExpensiveData> GetExpensiveDataAsync(CancellationToken cancell
 
 ```csharp
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
+using TheTechLoop.HybridCache.Configuration;
+using TheTechLoop.HybridCache.Metrics;
 using TheTechLoop.HybridCache.Services;
 using Xunit;
 
 public class ProductServiceTests
 {
-    private ICacheService CreateCacheService()
+    private static MemoryOnlyCacheService CreateCacheService()
     {
-        var memoryCache = new MemoryCache(new MemoryCacheOptions
+        var memoryCache = new MemoryCache(new MemoryCacheOptions { SizeLimit = 100 });
+
+        var config = Options.Create(new CacheConfig
         {
-            SizeLimit = 100
+            UseMemoryOnly = true,
+            Enabled = true,
+            DefaultExpirationMinutes = 60,
+            MemoryCache = new MemoryCacheConfig { SizeLimit = 100, DefaultExpirationSeconds = 30 }
         });
 
-        var config = Options.Create(new CacheConfiguration
-        {
-            MemoryCache = new MemoryCacheConfiguration { Enabled = true },
-            Redis = new RedisCacheConfiguration { Enabled = false }
-        });
+        var meterFactory = new Mock<IMeterFactory>();
+        meterFactory.Setup(f => f.Create(It.IsAny<MeterOptions>()))
+            .Returns((MeterOptions o) => new Meter(o));
 
-        return new MemoryCacheService(memoryCache, config, NullLogger<MemoryCacheService>.Instance);
+        return new MemoryOnlyCacheService(
+            memoryCache,
+            config,
+            new CacheMetrics(meterFactory.Object),
+            NullLogger<MemoryOnlyCacheService>.Instance);
     }
 
     [Fact]
@@ -756,10 +750,12 @@ await _cache.SetAsync(cacheKey, data, new CacheEntryOptions
 // Invalidate single item
 await _cache.RemoveAsync($"product:{productId}");
 
-// Invalidate related items
+// Invalidate related items individually
 await _cache.RemoveAsync($"product:{productId}");
 await _cache.RemoveAsync("products:all");
-await _cache.RemovePatternAsync($"products:category:*");
+
+// Note: RemoveByPrefixAsync logs a warning and is a no-op in UseMemoryOnly mode.
+// Use explicit key removal or switch to Redis for prefix-based invalidation.
 ```
 
 ### 5. Error Handling
@@ -809,28 +805,19 @@ public async Task<Product?> GetProductSafeAsync(int id)
 {
   "TheTechLoopCache": {
     "MemoryCache": {
-      "SizeLimit": 1024,  // Reduce limit
-      "CompactionPercentage": 0.30  // More aggressive compaction
+      "SizeLimit": 512
     }
   }
 }
 ```
+
+Reduce `SizeLimit` to apply backpressure earlier. The underlying `IMemoryCache` will compact to remove lower-priority entries when the budget is exceeded.
 
 ### Issue 2: Cache Not Evicting Old Entries
 
 **Symptom:** Expired entries remain in memory
 
-**Solution:**
-
-```json
-{
-  "TheTechLoopCache": {
-    "MemoryCache": {
-      "ExpirationScanFrequency": "00:01:00"  // Scan every minute
-    }
-  }
-}
-```
+**Solution:** Expired entries are only removed on next access or when `IMemoryCache` runs its internal compaction scan. To force more aggressive cleanup, call `MemoryCache.Compact(0.25)` from a `BackgroundService`, or reduce `SizeLimit` to trigger eviction sooner.
 
 ### Issue 3: Low Hit Rate
 
@@ -955,5 +942,5 @@ app.MapHealthChecks("/health");
 ---
 
 
-**Version:** 1.0.0  
+**Version:** 1.4.0  
 **Status:** Production-Ready ✅

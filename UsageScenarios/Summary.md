@@ -167,10 +167,11 @@ This directory contains comprehensive documentation for all major usage scenario
 **Best For:** Single-instance applications or when Redis is not available
 
 **Features:**
-- L1 memory cache only
-- No Redis dependency
+- `UseMemoryOnly: true` — zero Redis dependency, single config flag
+- `MemoryOnlyCacheService` backed solely by `IMemoryCache`
 - Fastest possible reads (< 1ms)
-- Perfect for development
+- Full `ICacheService` API compatibility — swap to Redis with one config change
+- Perfect for development, unit tests, and serverless
 
 **Use Cases:**
 - Development environments
@@ -304,6 +305,22 @@ builder.Services.AddTheTechLoopCacheWarmup();
 }
 ```
 
+### Example 4: Memory-Only (no Redis)
+```json
+{
+  "TheTechLoopCache": {
+    "UseMemoryOnly": true,
+    "Enabled": true,
+    "MemoryCache": { "SizeLimit": 1024 }
+  }
+}
+```
+
+```csharp
+// Program.cs — single call, no Redis packages needed
+builder.Services.AddTheTechLoopCache(builder.Configuration);
+```
+
 ---
 
 ## 📊 Feature Comparison Matrix
@@ -368,5 +385,5 @@ For questions or issues:
 ---
 
 
-**Version:** 1.3.0  
+**Version:** 1.4.0  
 **Status:** Production-Ready ✅

@@ -63,6 +63,18 @@ public static class CacheServiceCollectionExtensions
                 return services;
             }
 
+            if (config.UseMemoryOnly)
+            {
+                // Memory-only mode: no Redis, no distributed lock, no network dependency
+                services.AddMemoryCache(options =>
+                {
+                    options.SizeLimit = config.MemoryCache.SizeLimit;
+                });
+                services.AddSingleton<ICacheService, MemoryOnlyCacheService>();
+                services.AddSingleton<IDistributedLock, NoOpDistributedLock>();
+                return services;
+            }
+
             // Register Redis distributed cache
             services.AddStackExchangeRedisCache(options =>
             {

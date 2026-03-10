@@ -7,18 +7,18 @@ namespace TheTechLoop.HybridCache.Configuration;
 /// Configuration for the TheTechLoop distributed cache.
 /// Bind to "TheTechLoopCache" section in appsettings.json.
 /// </summary>
-public sealed class CacheConfig
+public sealed class CacheConfig : IValidatableObject
 {
     /// <summary>
     /// Redis connection string (host:port,password=xxx,defaultDatabase=0,...)
+    /// Only required when <see cref="UseMemoryOnly"/> is <c>false</c>.
     /// </summary>
-    [Required(ErrorMessage = "Redis connection string is required")]
     public string Configuration { get; set; } = string.Empty;
 
     /// <summary>
     /// Instance name prefix for all cache keys (e.g., "TheTechLoop:Company:")
+    /// Only required when <see cref="UseMemoryOnly"/> is <c>false</c>.
     /// </summary>
-    [Required(ErrorMessage = "Instance name is required")]
     public string InstanceName { get; set; } = string.Empty;
 
     /// <summary>
@@ -138,6 +138,34 @@ public sealed class CacheConfig
     /// </summary>
     [Range(1, 120)]
     public int LockTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// When <c>true</c>, uses only the in-process <see cref="IMemoryCache"/> with
+    /// no Redis dependency. All Redis-specific features (tagging, pub/sub,
+    /// compression, distributed locking) are automatically disabled.
+    /// <para>
+    /// Useful for: unit tests, local development, single-instance deployments,
+    /// or scenarios where a Redis dependency is undesirable.
+    /// </para>
+    /// </summary>
+    public bool UseMemoryOnly { get; set; }
+
+    /// <inheritdoc />
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (UseMemoryOnly || !Enabled)
+            yield break;
+
+        if (string.IsNullOrWhiteSpace(Configuration))
+            yield return new ValidationResult(
+                "Redis connection string is required when UseMemoryOnly is false.",
+                [nameof(Configuration)]);
+
+        if (string.IsNullOrWhiteSpace(InstanceName))
+            yield return new ValidationResult(
+                "Instance name is required when UseMemoryOnly is false.",
+                [nameof(InstanceName)]);
+    }
 }
 
 /// <summary>

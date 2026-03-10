@@ -41,6 +41,7 @@ Enterprise-grade distributed Redis caching library for .NET microservices with p
 
 ### Performance & Reliability
 - **10-50x Performance Improvement** — Typical read latency: < 5ms (vs 50-200ms database queries)
+- **Memory-Only Mode** — Zero-dependency local cache (`UseMemoryOnly: true`) — no Redis required
 - **High Availability** — Automatic Redis reconnection with exponential backoff
 - **Thread-Safe** — Concurrent-safe operations with minimal lock contention
 - **Production-Ready** — Battle-tested in enterprise microservices environments
@@ -61,7 +62,7 @@ Or via project reference:
 
 **Requirements:**
 - .NET 10 or higher
-- Redis 6.0+ (7.0+ recommended for Streams)
+- Redis 6.0+ (7.0+ recommended for Streams) — *not required when `UseMemoryOnly: true`*
 - StackExchange.Redis 2.11+
 
 ---
@@ -79,6 +80,9 @@ builder.Services.AddTheTechLoopCacheInvalidation();
 
 // Optional: Multi-level caching (L1 Memory + L2 Redis)
 builder.Services.AddTheTechLoopMultiLevelCache(builder.Configuration);
+
+// Alternative: Memory-only mode — no Redis required
+// builder.Services.AddTheTechLoopCache(builder.Configuration); // with UseMemoryOnly: true
 ```
 
 ### 2. Configuration (appsettings.json)
@@ -94,12 +98,15 @@ builder.Services.AddTheTechLoopMultiLevelCache(builder.Configuration);
     "EnableLogging": true,
     "Enabled": true,
 
+    "UseMemoryOnly": false,
+
     "InvalidationChannel": "cache:invalidation",
 
     "CircuitBreaker": {
       "Enabled": true,
       "BreakDurationSeconds": 60,
-      "FailureThreshold": 5
+      "FailureThreshold": 5,
+      "HalfOpenSuccessThreshold": 1
     },
 
     "MemoryCache": {
@@ -121,17 +128,20 @@ builder.Services.AddTheTechLoopMultiLevelCache(builder.Configuration);
 **Configuration Options Explained:**
 
 | Option | Description | Default |
-|--------|-------------|---------|
-| `Configuration` | Redis connection string | Required |
-| `ServiceName` | Unique name for your microservice (used in key prefixes) | Required |
-| `InstanceName` | Global prefix for all cache keys | Required |
+|--------|-------------|--------|
+| `Configuration` | Redis connection string — not required when `UseMemoryOnly: true` | Required* |
+| `ServiceName` | Unique name for your microservice (used in key prefixes) | `""` |
+| `InstanceName` | Global prefix for all cache keys — not required when `UseMemoryOnly: true` | Required* |
 | `CacheVersion` | Version for cache keys (bump to invalidate all) | `"v1"` |
 | `Enabled` | Master switch to enable/disable caching | `true` |
+| `UseMemoryOnly` | In-process `IMemoryCache` only — no Redis, no lock, no network | `false` |
 | `EnableTagging` | Enable cache tagging for bulk invalidation | `false` |
 | `EnableCompression` | Auto-compress values > threshold | `false` |
 | `EnableEffectivenessMetrics` | Track per-entity hit rates | `false` |
 | `UseStreamsForInvalidation` | Use Redis Streams instead of Pub/Sub | `false` |
 | `EnableWarmup` | Pre-load cache on startup | `false` |
+
+\* Required only when `UseMemoryOnly: false` and `Enabled: true`.
 
 ---
 
@@ -835,6 +845,19 @@ For questions or issues:
 
 ---
 
+## 📝 What's New in v1.4.0
+
+- **`UseMemoryOnly` mode** — Set `UseMemoryOnly: true` to activate `MemoryOnlyCacheService`, a full `ICacheService` backed solely by `IMemoryCache`. No Redis, no distributed lock, no network dependency. Ideal for development, unit tests, serverless, and single-instance deployments.
+- **`Configuration` and `InstanceName` no longer unconditionally required** — `CacheConfig` implements `IValidatableObject` and only enforces Redis fields when `UseMemoryOnly` is `false` and `Enabled` is `true`.
+- **Pluggable `ICacheSizeEstimator`** — Replace L1 size heuristics per payload family. Default implementation accounts for `string` (2 bytes/char), `byte[]`, `IDictionary`, and `ICollection`.
+- **`HalfOpenSuccessThreshold`** — Configure how many consecutive successes in the half-open state are required before the circuit closes. Default is 1 (previous behaviour preserved).
+- **Circuit breaker state-transition metrics** — New `cache.circuit_breaker.transitions` counter with `cache.circuit_breaker.state` tag (`opened`/`half_open`/`closed`). Both services also emit `LogWarning` on every transition.
+- **Normalized metric dimensions** — `cache.level` tag now present on hits, misses, errors, evictions, and duration histogram consistently.
+- **Shared `StampedeProtection` helper** — Lock acquisition timing, jittered retry loop, and `GetJitteredDelay` extracted from both `RedisCacheService` and `MultiLevelCacheService`.
+- **`BenchmarkDotNet` project** — `TheTechLoop.HybridCache.Benchmarks` with hot-key contention, mixed payload, high miss rate, and bulk-operation scenarios.
+
+---
+
 ## 📝 What's New in v1.3.0
 
 - **New metrics** — Added `cache.lock.wait_duration`, `cache.batch.size`, `cache.scan.duration`, and `cache.scan.deleted_keys` instruments for full operational visibility
@@ -845,6 +868,6 @@ For questions or issues:
 
 ---
 
-**Version:** 1.3.0  
+**Version:** 1.4.0  
 **Status:** Production-Ready ✅  
 
