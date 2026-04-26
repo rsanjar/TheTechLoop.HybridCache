@@ -85,6 +85,23 @@ public class MemoryOnlyCacheServiceTests
         factoryCalls.Should().Be(1);
     }
 
+    [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_IgnoresTagsAndCachesValue()
+    {
+        var factoryCalls = 0;
+
+        var result = await _sut.GetOrCreateAsync(
+            "tagged-key",
+            () => { factoryCalls++; return Task.FromResult("factory-result"); },
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a"));
+
+        var cached = await _sut.GetAsync<string>("tagged-key");
+
+        result.Should().Be("factory-result");
+        cached.Should().Be("factory-result");
+        factoryCalls.Should().Be(1);
+    }
+
     #endregion
 
     #region GetAsync / SetAsync

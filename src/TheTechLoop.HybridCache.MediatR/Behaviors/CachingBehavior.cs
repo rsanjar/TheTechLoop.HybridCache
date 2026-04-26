@@ -58,6 +58,29 @@ public sealed class CachingBehavior<TRequest, TResponse> : IPipelineBehavior<TRe
             "CachingBehavior intercepting {RequestType} with key: {CacheKey}",
             typeof(TRequest).Name, scopedKey);
 
+        if (request is ITaggedCacheable taggedCacheable)
+        {
+            if (_cache is not ICacheServiceWithEntryOptions entryOptionsCache)
+            {
+                throw new InvalidOperationException(
+                    $"{nameof(ITaggedCacheable)} requires the registered cache service to implement " +
+                    $"{nameof(ICacheServiceWithEntryOptions)}.");
+            }
+
+            var scopedTags = taggedCacheable.CacheTags
+                .Where(tag => !string.IsNullOrWhiteSpace(tag))
+                .Select(tag => _keyBuilder.Key(tag))
+                .ToArray();
+
+            var options = CacheEntryOptions.Absolute(cacheable.CacheDuration, scopedTags);
+
+            return await entryOptionsCache.GetOrCreateAsync(
+                scopedKey,
+                async () => await next(cancellationToken),
+                options,
+                cancellationToken);
+        }
+
         return await _cache.GetOrCreateAsync(
             scopedKey,
             async () => await next(cancellationToken),

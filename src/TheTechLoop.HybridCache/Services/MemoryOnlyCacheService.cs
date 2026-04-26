@@ -15,7 +15,7 @@ namespace TheTechLoop.HybridCache.Services;
 /// Suitable for single-instance deployments, local development, and tests.
 /// </para>
 /// </summary>
-public sealed class MemoryOnlyCacheService : ICacheService
+public sealed class MemoryOnlyCacheService : ICacheServiceWithEntryOptions
 {
     private readonly IMemoryCache _cache;
     private readonly CacheConfig _config;
@@ -55,6 +55,26 @@ public sealed class MemoryOnlyCacheService : ICacheService
         var value = await factory();
 
         Set(key, value, expiration);
+        return value;
+    }
+
+    /// <inheritdoc />
+    public async Task<T> GetOrCreateAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        CacheEntryOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        if (_cache.TryGetValue(key, out T? cached) && cached is not null)
+        {
+            _metrics.RecordHit(key, 0, "L1");
+            return cached;
+        }
+
+        _metrics.RecordMiss(key, 0, "L1");
+
+        var value = await factory();
+        await SetAsync(key, value, options, cancellationToken);
         return value;
     }
 

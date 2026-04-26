@@ -5,8 +5,10 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using System.Diagnostics;
+using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Configuration;
 using TheTechLoop.HybridCache.Metrics;
+using TheTechLoop.HybridCache.Tagging;
 
 namespace TheTechLoop.HybridCache.Streams;
 
@@ -25,6 +27,8 @@ public class CacheInvalidationStreamConsumer : BackgroundService
     private readonly IMemoryCache? _memoryCache;
     private readonly ILogger<CacheInvalidationStreamConsumer> _logger;
     private readonly CacheMetrics _metrics;
+    private readonly ICacheTagInvalidationService? _tagInvalidationService;
+    private readonly ICacheTagService? _tagService;
     private readonly string _streamName;
     private readonly string _consumerGroup;
     private readonly string _consumerName;
@@ -37,20 +41,27 @@ public class CacheInvalidationStreamConsumer : BackgroundService
     /// <param name="distributedCache"></param>
     /// <param name="logger"></param>
     /// <param name="config"></param>
+    /// <param name="metrics"></param>
     /// <param name="memoryCache"></param>
+    /// <param name="tagInvalidationService"></param>
+    /// <param name="tagService"></param>
     public CacheInvalidationStreamConsumer(
         IConnectionMultiplexer redis,
         IDistributedCache distributedCache,
         ILogger<CacheInvalidationStreamConsumer> logger,
         IOptions<CacheConfig> config,
         CacheMetrics metrics,
-        IMemoryCache? memoryCache = null)
+        IMemoryCache? memoryCache = null,
+        ICacheTagInvalidationService? tagInvalidationService = null,
+        ICacheTagService? tagService = null)
     {
         _redis = redis;
         _distributedCache = distributedCache;
         _memoryCache = memoryCache;
         _logger = logger;
         _metrics = metrics;
+        _tagInvalidationService = tagInvalidationService;
+        _tagService = tagService;
 
         var serviceName = config.Value.ServiceName ?? "default";
         _instanceName = config.Value.InstanceName ?? string.Empty;
@@ -152,6 +163,9 @@ public class CacheInvalidationStreamConsumer : BackgroundService
                 {
                     _memoryCache?.Remove(key);
                     await _distributedCache.RemoveAsync(key, ct);
+                    if (_tagService is not null)
+                        await _tagService.RemoveAsync(key, ct);
+
                     _logger.LogDebug("Invalidated cache key: {Key}", key);
                 }
                 break;
@@ -168,8 +182,16 @@ public class CacheInvalidationStreamConsumer : BackgroundService
                 if (values.TryGetValue("tag", out var tag))
                 {
                     _logger.LogDebug("Received tag invalidation: {Tag}", tag);
-                    // Tag invalidation requires ICacheTagService
-                    // Implementation deferred to consumer
+                    if (_tagInvalidationService is not null)
+                    {
+                        await _tagInvalidationService.RemoveByTagAsync(tag, ct);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Received tag invalidation for {Tag}, but no tag invalidation service is registered",
+                            tag);
+                    }
                 }
                 break;
         }
@@ -224,16 +246,20 @@ public class CacheInvalidationStreamConsumer : BackgroundService
 
 /// <summary>
 /// Publisher for Redis Streams-based cache invalidation.
+/// Prefer <see cref="ICacheInvalidationPublisher"/> and
+/// <see cref="ICacheTagInvalidationPublisher"/> for new code. This interface
+/// remains for compatibility with existing consumers that inject the
+/// stream-specific publisher directly.
 /// </summary>
 public interface ICacheInvalidationStreamPublisher
 {
     /// <summary>
     /// Publishes a cache invalidation message for a specific cache key.
     /// </summary>
-    /// <param name="key"></param>
+    /// <param name="cacheKey"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    Task PublishAsync(string key, CancellationToken cancellationToken = default);
+    Task PublishAsync(string cacheKey, CancellationToken cancellationToken = default);
 
 
     /// <summary>
@@ -256,7 +282,10 @@ public interface ICacheInvalidationStreamPublisher
 /// <summary>
 /// Redis Streams implementation of cache invalidation publisher.
 /// </summary>
-public class RedisCacheInvalidationStreamPublisher : ICacheInvalidationStreamPublisher
+public class RedisCacheInvalidationStreamPublisher :
+    ICacheInvalidationStreamPublisher,
+    ICacheInvalidationPublisher,
+    ICacheTagInvalidationPublisher
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<RedisCacheInvalidationStreamPublisher> _logger;
@@ -279,9 +308,9 @@ public class RedisCacheInvalidationStreamPublisher : ICacheInvalidationStreamPub
     /// <summary>
     /// Publishes a cache invalidation message for a specific cache key.
     /// </summary>
-    /// <param name="key"></param>
+    /// <param name="cacheKey"></param>
     /// <param name="cancellationToken"></param>
-    public async Task PublishAsync(string key, CancellationToken cancellationToken = default)
+    public async Task PublishAsync(string cacheKey, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -290,14 +319,14 @@ public class RedisCacheInvalidationStreamPublisher : ICacheInvalidationStreamPub
             await db.StreamAddAsync(_streamName, new[]
             {
                 new NameValueEntry("type", "key"),
-                new NameValueEntry("key", key)
+                new NameValueEntry("key", cacheKey)
             });
 
-            _logger.LogDebug("Published key invalidation to stream: {Key}", key);
+            _logger.LogDebug("Published key invalidation to stream: {Key}", cacheKey);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to publish key invalidation to stream: {Key}", key);
+            _logger.LogWarning(ex, "Failed to publish key invalidation to stream: {Key}", cacheKey);
         }
     }
 

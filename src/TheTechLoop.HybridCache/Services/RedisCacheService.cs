@@ -14,7 +14,7 @@ namespace TheTechLoop.HybridCache.Services;
 /// Redis-based distributed cache with stampede protection, circuit breaker,
 /// and OpenTelemetry metrics. Designed for CQRS read-path optimization.
 /// </summary>
-public class RedisCacheService : ICacheService
+public class RedisCacheService : ICacheServiceWithEntryOptions
 {
     private readonly IDistributedCache _cache;
     private readonly IDistributedLock _lock;
@@ -65,6 +65,18 @@ public class RedisCacheService : ICacheService
         Func<Task<T>> factory,
         TimeSpan expiration,
         CancellationToken cancellationToken = default)
+        => await GetOrCreateAsync(
+            key,
+            factory,
+            CacheEntryOptions.Absolute(expiration),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<T> GetOrCreateAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        CacheEntryOptions options,
+        CancellationToken cancellationToken = default)
     {
         if (!_config.Enabled)
             return await factory();
@@ -74,6 +86,13 @@ public class RedisCacheService : ICacheService
             _metrics.RecordCircuitBreakerBypass();
             LogDebug("Circuit breaker open, bypassing cache for key: {Key}", key);
             return await factory();
+        }
+
+        if (options.ExpirationType == CacheExpirationType.Sliding)
+        {
+            LogDebug(
+                "Sliding expiration is treated as absolute expiration by RedisCacheService for key: {Key}",
+                key);
         }
 
         var sw = Stopwatch.StartNew();
@@ -100,7 +119,7 @@ public class RedisCacheService : ICacheService
             // Coalesce in-process callers: only one thread per key enters
             // the lock + factory path; the rest await the same Task.
             return await _coalescer.CoalesceAsync(key, () =>
-                PopulateAsync(key, factory, expiration, cancellationToken));
+                PopulateAsync(key, factory, options, cancellationToken));
         }
         catch (Exception ex)
         {
@@ -119,7 +138,7 @@ public class RedisCacheService : ICacheService
     private async Task<T> PopulateAsync<T>(
         string key,
         Func<Task<T>> factory,
-        TimeSpan expiration,
+        CacheEntryOptions options,
         CancellationToken cancellationToken)
     {
         // Re-check cache (may have been populated by another process while
@@ -152,7 +171,8 @@ public class RedisCacheService : ICacheService
 
         // Populate from source
         var value = await factory();
-        await SetCacheSafeAsync(key, value, expiration, cancellationToken);
+        if (await SetCacheSafeAsync(key, value, options.Expiration, cancellationToken))
+            await AddTagsAsync(key, options.Tags, cancellationToken);
 
         _circuitBreaker.RecordSuccess();
         return value;
@@ -213,13 +233,15 @@ public class RedisCacheService : ICacheService
         if (!_config.Enabled || IsCircuitOpen() || value is null)
             return;
 
-        await SetCacheSafeAsync(key, value, options.Expiration, cancellationToken);
-
-        // Handle tags for group invalidation
-        if (options.Tags.Any())
+        if (options.ExpirationType == CacheExpirationType.Sliding)
         {
-            await AddTagsAsync(key, options.Tags, cancellationToken);
+            LogDebug(
+                "Sliding expiration is treated as absolute expiration by RedisCacheService for key: {Key}",
+                key);
         }
+
+        if (await SetCacheSafeAsync(key, value, options.Expiration, cancellationToken))
+            await AddTagsAsync(key, options.Tags, cancellationToken);
 
         // Note: IDistributedCache doesn't support sliding expiration natively.
         // Sliding expiration requires calling RefreshAsync on each access.
@@ -235,6 +257,9 @@ public class RedisCacheService : ICacheService
         try
         {
             await _cache.RemoveAsync(key, cancellationToken);
+            if (_tagService is not null)
+                await _tagService.RemoveAsync(key, cancellationToken);
+
             _metrics.RecordEviction(key);
             LogDebug("Cache removed for key: {Key}", key);
         }
@@ -246,7 +271,10 @@ public class RedisCacheService : ICacheService
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Prefix removal is handled by invalidation subscribers using Redis SCAN.
+    /// Direct calls log guidance and do not enumerate Redis keys.
+    /// </summary>
     public async Task RemoveByPrefixAsync(string prefix, CancellationToken cancellationToken = default)
     {
         if (!_config.Enabled)
@@ -369,7 +397,7 @@ public class RedisCacheService : ICacheService
         }
     }
 
-    private async Task SetCacheSafeAsync<T>(
+    private async Task<bool> SetCacheSafeAsync<T>(
         string key,
         T value,
         TimeSpan? expiration,
@@ -378,7 +406,7 @@ public class RedisCacheService : ICacheService
         try
         {
             if (value is null || EqualityComparer<T>.Default.Equals(value, default))
-                return;
+                return false;
 
             var bytes = CacheSerializer.Serialize(value);
             var options = new DistributedCacheEntryOptions
@@ -388,12 +416,14 @@ public class RedisCacheService : ICacheService
 
             await _cache.SetAsync(key, bytes, options, cancellationToken);
             LogDebug("Cache set for key: {Key}, Expiration: {Expiration}", key, options.AbsoluteExpirationRelativeToNow);
+            return true;
         }
         catch (Exception ex)
         {
             _metrics.RecordError(key);
             _circuitBreaker.RecordFailure();
             _logger.LogWarning(ex, "Failed to write to cache for key: {Key}", key);
+            return false;
         }
     }
 

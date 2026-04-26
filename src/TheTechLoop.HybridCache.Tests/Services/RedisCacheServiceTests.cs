@@ -10,6 +10,7 @@ using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Configuration;
 using TheTechLoop.HybridCache.Metrics;
 using TheTechLoop.HybridCache.Services;
+using TheTechLoop.HybridCache.Tagging;
 
 namespace TheTechLoop.HybridCache.Tests.Services;
 
@@ -17,6 +18,7 @@ public class RedisCacheServiceTests
 {
     private readonly Mock<IDistributedCache> _cacheMock;
     private readonly Mock<IDistributedLock> _lockMock;
+    private readonly Mock<ICacheTagService> _tagServiceMock;
     private readonly CacheConfig _config;
     private readonly CacheMetrics _metrics;
     private readonly RedisCacheService _sut;
@@ -25,6 +27,7 @@ public class RedisCacheServiceTests
     {
         _cacheMock = new Mock<IDistributedCache>();
         _lockMock = new Mock<IDistributedLock>();
+        _tagServiceMock = new Mock<ICacheTagService>();
         _config = new CacheConfig
         {
             Enabled = true,
@@ -45,7 +48,8 @@ public class RedisCacheServiceTests
             _lockMock.Object,
             NullLogger<RedisCacheService>.Instance,
             Options.Create(_config),
-            _metrics);
+            _metrics,
+            _tagServiceMock.Object);
     }
 
     #region GetOrCreateAsync
@@ -141,6 +145,50 @@ public class RedisCacheServiceTests
             It.IsAny<string>(),
             It.IsAny<byte[]>(),
             It.IsAny<DistributedCacheEntryOptions>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_OnCacheMiss_CachesAndRegistersTags()
+    {
+        SetupCacheGet("tagged-key", null);
+        SetupLockAcquire();
+
+        var result = await _sut.GetOrCreateAsync(
+            "tagged-key",
+            async () => new TestDto { Id = 7, Name = "Tagged" },
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a", "tag-b"));
+
+        result.Id.Should().Be(7);
+
+        _cacheMock.Verify(c => c.SetAsync(
+            "tagged-key",
+            It.IsAny<byte[]>(),
+            It.Is<DistributedCacheEntryOptions>(o => o.AbsoluteExpirationRelativeToNow == TimeSpan.FromMinutes(5)),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            "tagged-key",
+            It.Is<IEnumerable<string>>(tags => tags.SequenceEqual(new[] { "tag-a", "tag-b" })),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_OnCacheHit_DoesNotRegisterTags()
+    {
+        var expected = new TestDto { Id = 8, Name = "Cached" };
+        var json = JsonSerializer.Serialize(expected, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        SetupCacheGet("hit-key", json);
+
+        var result = await _sut.GetOrCreateAsync(
+            "hit-key",
+            async () => new TestDto { Id = 9, Name = "Fresh" },
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a"));
+
+        result.Id.Should().Be(8);
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            It.IsAny<string>(),
+            It.IsAny<IEnumerable<string>>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -247,6 +295,20 @@ public class RedisCacheServiceTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task SetAsync_WithEntryOptions_RegistersTags()
+    {
+        await _sut.SetAsync(
+            "key",
+            new TestDto { Id = 1, Name = "Test" },
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(10), "tag-a", "tag-b"));
+
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            "key",
+            It.Is<IEnumerable<string>>(tags => tags.SequenceEqual(new[] { "tag-a", "tag-b" })),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     #endregion
 
     #region RemoveAsync
@@ -268,6 +330,14 @@ public class RedisCacheServiceTests
         await _sut.RemoveAsync("remove-key");
 
         _cacheMock.Verify(c => c.RemoveAsync("remove-key", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RemoveAsync_CleansTagIndexes()
+    {
+        await _sut.RemoveAsync("remove-key");
+
+        _tagServiceMock.Verify(t => t.RemoveAsync("remove-key", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     #endregion
@@ -304,7 +374,8 @@ public class RedisCacheServiceTests
             _lockMock.Object,
             NullLogger<RedisCacheService>.Instance,
             Options.Create(config),
-            CreateMetrics());
+            CreateMetrics(),
+            _tagServiceMock.Object);
     }
 
     private static CacheMetrics CreateMetrics()

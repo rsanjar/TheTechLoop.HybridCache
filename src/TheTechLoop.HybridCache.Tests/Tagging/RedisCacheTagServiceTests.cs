@@ -24,7 +24,8 @@ public class RedisCacheTagServiceTests
         _config = new CacheConfig
         {
             EnableTagging = true,
-            TagIndexTtlMinutes = 1440 // 24 hours
+            TagIndexTtlMinutes = 1440, // 24 hours
+            InstanceName = "app:"
         };
 
         _redisMock.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>()))
@@ -236,7 +237,9 @@ public class RedisCacheTagServiceTests
         _dbMock.Verify(d => d.ScriptEvaluateAsync(
             It.Is<string>(s => s.Contains("SMEMBERS") && s.Contains("UNLINK")),
             It.Is<RedisKey[]>(k => k.Length == 1 && k[0] == (RedisKey)"tag:User"),
-            It.Is<RedisValue[]>(v => v.Length == 1 && v[0] == (RedisValue)"key:tags:"),
+            It.Is<RedisValue[]>(v => v.Length == 2
+                && v[0] == (RedisValue)"key:tags:"
+                && v[1] == (RedisValue)"app:"),
             It.IsAny<CommandFlags>()), Times.Once);
     }
 

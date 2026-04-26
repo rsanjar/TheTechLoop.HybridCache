@@ -23,6 +23,20 @@ public class NoOpCacheServiceTests
     }
 
     [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_AlwaysCallsFactory()
+    {
+        var factoryCalled = false;
+
+        var result = await _sut.GetOrCreateAsync(
+            "any-key",
+            async () => { factoryCalled = true; return "value"; },
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a"));
+
+        result.Should().Be("value");
+        factoryCalled.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task GetAsync_AlwaysReturnsDefault()
     {
         var result = await _sut.GetAsync<string>("any-key");

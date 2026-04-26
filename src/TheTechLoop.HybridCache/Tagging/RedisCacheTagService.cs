@@ -62,12 +62,17 @@ public class RedisCacheTagService : ICacheTagService
     private const string RemoveByTagLuaScript = """
         local tagKey = KEYS[1]
         local reversePrefix = ARGV[1]
+        local dataKeyPrefix = ARGV[2]
         local members = redis.call('SMEMBERS', tagKey)
         if #members == 0 then return 0 end
         for i = 1, #members do
             redis.call('UNLINK', reversePrefix .. members[i])
+            if dataKeyPrefix ~= '' then
+                redis.call('UNLINK', dataKeyPrefix .. members[i])
+            end
+            redis.call('UNLINK', members[i])
         end
-        redis.call('UNLINK', tagKey, unpack(members))
+        redis.call('UNLINK', tagKey)
         return #members
         """;
 
@@ -220,7 +225,7 @@ public class RedisCacheTagService : ICacheTagService
             var result = await db.ScriptEvaluateAsync(
                 RemoveByTagLuaScript,
                 [(RedisKey)tagKey],
-                [(RedisValue)ReverseIndexPrefix]);
+                [(RedisValue)ReverseIndexPrefix, (RedisValue)(_config.InstanceName ?? string.Empty)]);
 
             var count = (int)result;
             _logger.LogDebug("Atomically removed {Count} keys for tag {Tag}", count, tag);

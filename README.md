@@ -22,7 +22,7 @@ Enterprise-grade distributed Redis caching library for .NET microservices with p
 - **Cache Versioning** — Bump version on breaking DTO changes
 
 ### Advanced Features
-- **Cache Tagging** — Group and invalidate related cache entries with Redis Sets (O(1) operations)
+- **Cache Tagging** — Group and invalidate related cache entries with Redis Sets, including MediatR tag invalidation
 - **Cache Warming** — Pre-load reference data on startup for zero cold-start latency
 - **Compression** — Automatic GZip compression for large payloads (60-80% memory savings)
 - **Sliding Expiration** — Auto-extend cache lifetime on each access (perfect for sessions)
@@ -31,7 +31,7 @@ Enterprise-grade distributed Redis caching library for .NET microservices with p
 ### Invalidation & Coherence
 - **Pub/Sub Invalidation** — Cross-service cache invalidation via Redis channels
 - **Bulk Invalidation** — Invalidate by prefix pattern or tags (e.g., all user data at once)
-- **Automatic Invalidation** — Convention-based invalidation via `ICacheInvalidatable` marker
+- **Automatic Invalidation** — Convention-based key, prefix, and tag invalidation via MediatR markers
 
 ### Integration & Observability
 - **CQRS-Optimized** — Read-through caching with write-through invalidation
@@ -349,6 +349,24 @@ await _cache.SetAsync(profileKey, user, options);
 await _tagService.RemoveByTagAsync($"User:{userId}");
 ```
 
+MediatR requests can opt into tags without changing existing key/prefix behavior:
+
+```csharp
+public record GetUserProfileQuery(Guid UserId) : IRequest<UserProfile>, ITaggedCacheable
+{
+    public string CacheKey => $"User:Profile:{UserId}";
+    public TimeSpan CacheDuration => TimeSpan.FromMinutes(30);
+    public IReadOnlyList<string> CacheTags => ["User", $"User:{UserId}"];
+}
+
+public record UpdateUserProfileCommand(Guid UserId) : IRequest<bool>, ICacheTagInvalidatable
+{
+    public IReadOnlyList<string> CacheTagsToInvalidate => [$"User:{UserId}"];
+}
+```
+
+MediatR tag names are scoped with `ServiceName:CacheVersion`. A tag such as `"User:42"` is stored and invalidated as `"company-svc:v1:User:42"`, so tag fanout is per service unless multiple services intentionally share the same service/version scope.
+
 **Use Cases:**
 - User logout (invalidate all user sessions + preferences + permissions)
 - Role change (invalidate user permissions + menu access)
@@ -512,6 +530,16 @@ public interface ICacheable
     string CacheKey { get; }
     TimeSpan CacheDuration { get; }
 }
+
+public interface ITaggedCacheable : ICacheable
+{
+    IReadOnlyList<string> CacheTags { get; }
+}
+
+public interface ICacheTagInvalidatable
+{
+    IReadOnlyList<string> CacheTagsToInvalidate { get; }
+}
 ```
 
 ### CachingBehavior
@@ -596,6 +624,15 @@ public interface ICacheService
     Task RemoveAsync(string key, CancellationToken ct = default);
     Task RemoveByPrefixAsync(string keyPrefix, CancellationToken ct = default);
     Task RefreshAsync(string key, CancellationToken ct = default);
+}
+
+public interface ICacheServiceWithEntryOptions : ICacheService
+{
+    Task<T> GetOrCreateAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        CacheEntryOptions options,
+        CancellationToken ct = default);
 }
 ```
 
@@ -845,6 +882,18 @@ For questions or issues:
 
 ---
 
+## 📝 What's New in v1.5.0
+
+- **MediatR tag-aware caching** — Add `ITaggedCacheable` to associate cached query responses with scoped tags during read-through caching.
+- **MediatR tag invalidation** — Add `ICacheTagInvalidatable` so commands can invalidate related cache entries by tag after successful execution.
+- **Read-through `CacheEntryOptions`** — New `ICacheServiceWithEntryOptions.GetOrCreateAsync(...)` overload supports tags and advanced entry options without changing existing `ICacheService` calls.
+- **Cross-service tag invalidation** — Pub/Sub and Redis Streams now publish/consume tag invalidation messages and remove matching entries from L1, L2, and tag metadata.
+- **Multi-level tag registration** — `MultiLevelCacheService` now records tag metadata when entries are populated or set with `CacheEntryOptions`.
+- **L1 absolute entry options** — `MultiLevelCacheService` now honors `CacheEntryOptions.Absolute(...)` for L1 entries instead of using only `MemoryCache.DefaultExpirationSeconds`.
+- **Tag metadata cleanup** — Exact key removal cleans tag indexes, and direct tag removal handles Redis `InstanceName` prefixes correctly.
+
+---
+
 ## 📝 What's New in v1.4.0
 
 - **`UseMemoryOnly` mode** — Set `UseMemoryOnly: true` to activate `MemoryOnlyCacheService`, a full `ICacheService` backed solely by `IMemoryCache`. No Redis, no distributed lock, no network dependency. Ideal for development, unit tests, serverless, and single-instance deployments.
@@ -868,6 +917,6 @@ For questions or issues:
 
 ---
 
-**Version:** 1.4.0  
-**Status:** Production-Ready ✅  
+**Version:** 1.5.0
+**Status:** Production-Ready ✅
 

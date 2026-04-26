@@ -11,6 +11,7 @@ using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Configuration;
 using TheTechLoop.HybridCache.Metrics;
 using TheTechLoop.HybridCache.Services;
+using TheTechLoop.HybridCache.Tagging;
 
 namespace TheTechLoop.HybridCache.Tests.Services;
 
@@ -19,6 +20,7 @@ public class MultiLevelCacheServiceTests
     private readonly Mock<IMemoryCache> _l1Mock;
     private readonly Mock<IDistributedCache> _l2Mock;
     private readonly Mock<IDistributedLock> _lockMock;
+    private readonly Mock<ICacheTagService> _tagServiceMock;
     private readonly CacheConfig _config;
     private readonly CacheMetrics _metrics;
     private readonly MultiLevelCacheService _sut;
@@ -33,6 +35,7 @@ public class MultiLevelCacheServiceTests
         _l1Mock = new Mock<IMemoryCache>();
         _l2Mock = new Mock<IDistributedCache>();
         _lockMock = new Mock<IDistributedLock>();
+        _tagServiceMock = new Mock<ICacheTagService>();
         _config = new CacheConfig
         {
             Enabled = true,
@@ -63,7 +66,8 @@ public class MultiLevelCacheServiceTests
             _lockMock.Object,
             NullLogger<MultiLevelCacheService>.Instance,
             Options.Create(_config),
-            _metrics);
+            _metrics,
+            tagService: _tagServiceMock.Object);
     }
 
     #region GetOrCreateAsync
@@ -178,6 +182,43 @@ public class MultiLevelCacheServiceTests
             TimeSpan.FromMinutes(5));
 
         result.Should().Be("after-retry");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_BothMiss_RegistersTags()
+    {
+        SetupL1Miss<string>("tagged-key");
+        SetupL2GetNull("tagged-key");
+        SetupLockAcquire();
+        SetupL1CreateEntry();
+
+        var result = await _sut.GetOrCreateAsync(
+            "tagged-key",
+            async () => "factory-value",
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a", "tag-b"));
+
+        result.Should().Be("factory-value");
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            "tagged-key",
+            It.Is<IEnumerable<string>>(tags => tags.SequenceEqual(new[] { "tag-a", "tag-b" })),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_L1Hit_DoesNotRegisterTags()
+    {
+        SetupL1Hit("tagged-key", "cached-value");
+
+        var result = await _sut.GetOrCreateAsync(
+            "tagged-key",
+            async () => "factory-value",
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a"));
+
+        result.Should().Be("cached-value");
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            It.IsAny<string>(),
+            It.IsAny<IEnumerable<string>>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     #endregion
@@ -298,12 +339,31 @@ public class MultiLevelCacheServiceTests
     public async Task SetAsync_WithAbsoluteOptions_UsesAbsoluteExpirationOnL1()
     {
         var options = CacheEntryOptions.Absolute(TimeSpan.FromMinutes(10));
-        SetupL1CreateEntry();
+        var entryMock = new Mock<ICacheEntry>();
+        entryMock.SetupAllProperties();
+        entryMock.Setup(e => e.Dispose());
+
+        _l1Mock.Setup(m => m.CreateEntry("abs-key")).Returns(entryMock.Object);
 
         await _sut.SetAsync("abs-key", "value", options);
 
-        // Absolute uses SetL1 which uses AbsoluteExpirationRelativeToNow
-        _l1Mock.Verify(m => m.CreateEntry(It.IsAny<object>()), Times.Once);
+        entryMock.VerifySet(e => e.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10));
+    }
+
+    [Fact]
+    public async Task SetAsync_WithEntryOptions_RegistersTags()
+    {
+        SetupL1CreateEntry();
+
+        await _sut.SetAsync(
+            "tagged-key",
+            "value",
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(10), "tag-a", "tag-b"));
+
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            "tagged-key",
+            It.Is<IEnumerable<string>>(tags => tags.SequenceEqual(new[] { "tag-a", "tag-b" })),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -319,6 +379,52 @@ public class MultiLevelCacheServiceTests
         var act = () => _sut.SetAsync("key", "value", TimeSpan.FromMinutes(5));
 
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task SetAsync_WithEntryOptions_L2WriteFailure_DoesNotRegisterTags()
+    {
+        SetupL1CreateEntry();
+
+        _l2Mock
+            .Setup(c => c.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
+                It.IsAny<DistributedCacheEntryOptions>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("Redis write failed"));
+
+        await _sut.SetAsync(
+            "tagged-key",
+            "value",
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a"));
+
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            It.IsAny<string>(),
+            It.IsAny<IEnumerable<string>>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_L2WriteFailure_DoesNotRegisterTags()
+    {
+        SetupL1Miss<string>("tagged-key");
+        SetupL2GetNull("tagged-key");
+        SetupLockAcquire();
+        SetupL1CreateEntry();
+
+        _l2Mock
+            .Setup(c => c.SetAsync(It.IsAny<string>(), It.IsAny<byte[]>(),
+                It.IsAny<DistributedCacheEntryOptions>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("Redis write failed"));
+
+        var result = await _sut.GetOrCreateAsync(
+            "tagged-key",
+            async () => "factory-value",
+            CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a"));
+
+        result.Should().Be("factory-value");
+        _tagServiceMock.Verify(t => t.AddTagsAsync(
+            It.IsAny<string>(),
+            It.IsAny<IEnumerable<string>>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     #endregion
@@ -546,7 +652,8 @@ public class MultiLevelCacheServiceTests
             _lockMock.Object,
             NullLogger<MultiLevelCacheService>.Instance,
             Options.Create(config),
-            CreateMetrics());
+            CreateMetrics(),
+            tagService: _tagServiceMock.Object);
     }
 
     private static CacheConfig CreateDisabledConfig() => new()
@@ -567,7 +674,7 @@ public class MultiLevelCacheServiceTests
 
     private void SetupL1Hit<T>(string key, T value)
     {
-        object outVal = value!;
+        object? outVal = value;
         _l1Mock
             .Setup(m => m.TryGetValue(key, out outVal))
             .Returns(true);

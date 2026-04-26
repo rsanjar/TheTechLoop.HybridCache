@@ -58,7 +58,9 @@ public static class CacheServiceCollectionExtensions
             if (!config.Enabled)
             {
                 // Register no-op implementations when cache is disabled
-                services.AddSingleton<ICacheService, NoOpCacheService>();
+                services.AddSingleton<NoOpCacheService>();
+                services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<NoOpCacheService>());
+                services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<NoOpCacheService>());
                 services.AddSingleton<IDistributedLock, NoOpDistributedLock>();
                 return services;
             }
@@ -70,7 +72,9 @@ public static class CacheServiceCollectionExtensions
                 {
                     options.SizeLimit = config.MemoryCache.SizeLimit;
                 });
-                services.AddSingleton<ICacheService, MemoryOnlyCacheService>();
+                services.AddSingleton<MemoryOnlyCacheService>();
+                services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<MemoryOnlyCacheService>());
+                services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<MemoryOnlyCacheService>());
                 services.AddSingleton<IDistributedLock, NoOpDistributedLock>();
                 return services;
             }
@@ -118,10 +122,13 @@ public static class CacheServiceCollectionExtensions
             if (config.EnableTagging)
             {
                 services.AddSingleton<ICacheTagService, RedisCacheTagService>();
+                services.AddSingleton<ICacheTagInvalidationService, CacheTagInvalidationService>();
             }
 
             // Register cache service (single-level Redis)
-            services.AddSingleton<ICacheService, RedisCacheService>();
+            services.AddSingleton<RedisCacheService>();
+            services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<RedisCacheService>());
+            services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<RedisCacheService>());
 
             // Wrap with compression if enabled
             if (config.EnableCompression)
@@ -130,11 +137,14 @@ public static class CacheServiceCollectionExtensions
                 if (descriptor is not null)
                 {
                     services.Remove(descriptor);
-                    services.AddSingleton<ICacheService>(sp =>
+                    services.RemoveAll<ICacheServiceWithEntryOptions>();
+                    services.AddSingleton<CompressedCacheService>(sp =>
                     {
-                        var inner = ActivatorUtilities.CreateInstance<RedisCacheService>(sp);
+                        var inner = sp.GetRequiredService<RedisCacheService>();
                         return new CompressedCacheService(inner, config.CompressionThresholdBytes, config.CompressionLevel);
                     });
+                    services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<CompressedCacheService>());
+                    services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<CompressedCacheService>());
                 }
             }
 
@@ -178,14 +188,18 @@ public static class CacheServiceCollectionExtensions
             if (existing is not null)
                 services.Remove(existing);
 
-            services.AddSingleton<ICacheService, MultiLevelCacheService>();
+            services.RemoveAll<ICacheServiceWithEntryOptions>();
+            services.AddSingleton<MultiLevelCacheService>();
+            services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<MultiLevelCacheService>());
+            services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<MultiLevelCacheService>());
 
             return services;
         }
 
         /// <summary>
         /// Enables cross-service cache invalidation via Redis Pub/Sub or Streams.
-        /// Registers ICacheInvalidationPublisher and starts the background subscriber.
+        /// Registers key/prefix and tag invalidation publishers and starts the
+        /// configured background subscriber or stream consumer.
         /// </summary>
         public IServiceCollection AddTheTechLoopCacheInvalidation(IConfiguration configuration,
             string configSectionName = ConfigSection)
@@ -195,13 +209,18 @@ public static class CacheServiceCollectionExtensions
             if (config.UseStreamsForInvalidation)
             {
                 // Use Redis Streams for guaranteed delivery
-                services.AddSingleton<ICacheInvalidationStreamPublisher, RedisCacheInvalidationStreamPublisher>();
+                services.AddSingleton<RedisCacheInvalidationStreamPublisher>();
+                services.AddSingleton<ICacheInvalidationStreamPublisher>(sp => sp.GetRequiredService<RedisCacheInvalidationStreamPublisher>());
+                services.AddSingleton<ICacheInvalidationPublisher>(sp => sp.GetRequiredService<RedisCacheInvalidationStreamPublisher>());
+                services.AddSingleton<ICacheTagInvalidationPublisher>(sp => sp.GetRequiredService<RedisCacheInvalidationStreamPublisher>());
                 services.AddHostedService<CacheInvalidationStreamConsumer>();
             }
             else
             {
                 // Use Pub/Sub (default)
-                services.AddSingleton<ICacheInvalidationPublisher, RedisCacheInvalidationPublisher>();
+                services.AddSingleton<RedisCacheInvalidationPublisher>();
+                services.AddSingleton<ICacheInvalidationPublisher>(sp => sp.GetRequiredService<RedisCacheInvalidationPublisher>());
+                services.AddSingleton<ICacheTagInvalidationPublisher>(sp => sp.GetRequiredService<RedisCacheInvalidationPublisher>());
                 services.AddHostedService<CacheInvalidationSubscriber>();
             }
 

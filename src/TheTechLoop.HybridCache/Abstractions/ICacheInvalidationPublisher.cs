@@ -17,3 +17,25 @@ public interface ICacheInvalidationPublisher
     /// </summary>
     Task PublishPrefixAsync(string prefix, CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Publishes cache invalidation events for cache tags across microservices.
+/// </summary>
+public interface ICacheTagInvalidationPublisher
+{
+    /// <summary>
+    /// Publishes a cache invalidation event for all keys associated with a tag.
+    /// </summary>
+    Task PublishTagAsync(string tag, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Removes local and distributed cache entries associated with cache tags.
+/// </summary>
+public interface ICacheTagInvalidationService
+{
+    /// <summary>
+    /// Removes all cache entries associated with the given tag.
+    /// </summary>
+    Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default);
+}

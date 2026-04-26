@@ -13,12 +13,16 @@ public class CacheInvalidationBehaviorTests
 {
     private readonly Mock<ICacheService> _cacheMock;
     private readonly Mock<ICacheInvalidationPublisher> _publisherMock;
+    private readonly Mock<ICacheTagInvalidationService> _tagInvalidationMock;
+    private readonly Mock<ICacheTagInvalidationPublisher> _tagPublisherMock;
     private readonly CacheKeyBuilder _keyBuilder;
 
     public CacheInvalidationBehaviorTests()
     {
         _cacheMock = new Mock<ICacheService>();
         _publisherMock = new Mock<ICacheInvalidationPublisher>();
+        _tagInvalidationMock = new Mock<ICacheTagInvalidationService>();
+        _tagPublisherMock = new Mock<ICacheTagInvalidationPublisher>();
         _keyBuilder = new CacheKeyBuilder("test-svc", "v1");
     }
 
@@ -128,7 +132,9 @@ public class CacheInvalidationBehaviorTests
             _cacheMock.Object,
             _keyBuilder,
             NullLogger<CacheInvalidationBehavior<TestInvalidatableCommand, bool>>.Instance,
-            publisher: null);
+            publisher: null,
+            tagInvalidationService: null,
+            tagPublisher: null);
 
         await sut.Handle(
             new TestInvalidatableCommand(42),
@@ -157,6 +163,63 @@ public class CacheInvalidationBehaviorTests
         result.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Handle_TagInvalidatableCommand_RemovesScopedTags()
+    {
+        var sut = CreateBehavior<TestTagInvalidatableCommand, bool>();
+
+        await sut.Handle(
+            new TestTagInvalidatableCommand(42),
+            ct => Task.FromResult(true),
+            CancellationToken.None);
+
+        _tagInvalidationMock.Verify(
+            s => s.RemoveByTagAsync("test-svc:v1:Entity", It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        _tagInvalidationMock.Verify(
+            s => s.RemoveByTagAsync("test-svc:v1:Entity:42", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_TagInvalidatableCommand_PublishesScopedTags()
+    {
+        var sut = CreateBehavior<TestTagInvalidatableCommand, bool>();
+
+        await sut.Handle(
+            new TestTagInvalidatableCommand(42),
+            ct => Task.FromResult(true),
+            CancellationToken.None);
+
+        _tagPublisherMock.Verify(
+            p => p.PublishTagAsync("test-svc:v1:Entity", It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        _tagPublisherMock.Verify(
+            p => p.PublishTagAsync("test-svc:v1:Entity:42", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_TagInvalidatableCommand_WithoutTagServices_DoesNotThrow()
+    {
+        var sut = new CacheInvalidationBehavior<TestTagInvalidatableCommand, bool>(
+            _cacheMock.Object,
+            _keyBuilder,
+            NullLogger<CacheInvalidationBehavior<TestTagInvalidatableCommand, bool>>.Instance,
+            _publisherMock.Object,
+            tagInvalidationService: null,
+            tagPublisher: null);
+
+        var act = () => sut.Handle(
+            new TestTagInvalidatableCommand(42),
+            ct => Task.FromResult(true),
+            CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+    }
+
     #region Helpers
 
     private CacheInvalidationBehavior<TRequest, TResponse> CreateBehavior<TRequest, TResponse>()
@@ -166,7 +229,9 @@ public class CacheInvalidationBehaviorTests
             _cacheMock.Object,
             _keyBuilder,
             NullLogger<CacheInvalidationBehavior<TRequest, TResponse>>.Instance,
-            _publisherMock.Object);
+            _publisherMock.Object,
+            _tagInvalidationMock.Object,
+            _tagPublisherMock.Object);
     }
 
     #endregion
@@ -179,6 +244,11 @@ public class CacheInvalidationBehaviorTests
     {
         public IReadOnlyList<string> CacheKeysToInvalidate => [$"Entity:{Id}"];
         public IReadOnlyList<string> CachePrefixesToInvalidate => ["Entity:Search", "Entity:List"];
+    }
+
+    public record TestTagInvalidatableCommand(int Id) : IRequest<bool>, ICacheTagInvalidatable
+    {
+        public IReadOnlyList<string> CacheTagsToInvalidate => ["Entity", $"Entity:{Id}"];
     }
 
     #endregion

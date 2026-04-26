@@ -117,12 +117,68 @@ public class CachingBehaviorTests
         capturedDuration.Should().Be(TimeSpan.FromMinutes(30));
     }
 
+    [Fact]
+    public async Task Handle_TaggedCacheableRequest_UsesEntryOptionsWithScopedTags()
+    {
+        var cacheMock = new Mock<ICacheServiceWithEntryOptions>();
+        var sut = new CachingBehavior<TestTaggedCacheableQuery, string>(
+            cacheMock.Object,
+            _keyBuilder,
+            NullLogger<CachingBehavior<TestTaggedCacheableQuery, string>>.Instance);
+
+        CacheEntryOptions? capturedOptions = null;
+        cacheMock
+            .Setup(c => c.GetOrCreateAsync(
+                "test-svc:v1:Entity:42",
+                It.IsAny<Func<Task<string>>>(),
+                It.IsAny<CacheEntryOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, Func<Task<string>>, CacheEntryOptions, CancellationToken>((_, _, options, _) =>
+                capturedOptions = options)
+            .ReturnsAsync("tagged-value");
+
+        var result = await sut.Handle(
+            new TestTaggedCacheableQuery(42),
+            ct => Task.FromResult("handler-value"),
+            CancellationToken.None);
+
+        result.Should().Be("tagged-value");
+        capturedOptions.Should().NotBeNull();
+        capturedOptions!.Expiration.Should().Be(TimeSpan.FromMinutes(30));
+        capturedOptions.ExpirationType.Should().Be(CacheExpirationType.Absolute);
+        capturedOptions.Tags.Should().BeEquivalentTo(["test-svc:v1:Entity", "test-svc:v1:Entity:42"]);
+    }
+
+    [Fact]
+    public async Task Handle_TaggedCacheableRequest_ThrowsWhenCacheDoesNotSupportEntryOptions()
+    {
+        var sut = new CachingBehavior<TestTaggedCacheableQuery, string>(
+            _cacheMock.Object,
+            _keyBuilder,
+            NullLogger<CachingBehavior<TestTaggedCacheableQuery, string>>.Instance);
+
+        var act = () => sut.Handle(
+            new TestTaggedCacheableQuery(42),
+            ct => Task.FromResult("handler-value"),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*ICacheServiceWithEntryOptions*");
+    }
+
     #region Test Request Types
 
     public record TestCacheableQuery(int Id) : IRequest<string>, ICacheable
     {
         public string CacheKey => $"Entity:{Id}";
         public TimeSpan CacheDuration => TimeSpan.FromMinutes(30);
+    }
+
+    public record TestTaggedCacheableQuery(int Id) : IRequest<string>, ITaggedCacheable
+    {
+        public string CacheKey => $"Entity:{Id}";
+        public TimeSpan CacheDuration => TimeSpan.FromMinutes(30);
+        public IReadOnlyList<string> CacheTags => ["Entity", $"Entity:{Id}"];
     }
 
     public record TestNonCacheableQuery : IRequest<string>;

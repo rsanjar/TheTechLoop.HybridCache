@@ -6,7 +6,7 @@ namespace TheTechLoop.HybridCache.Services;
 /// No-op cache service used when caching is disabled.
 /// All read operations return default; all write operations are no-ops.
 /// </summary>
-public class NoOpCacheService : ICacheService
+public class NoOpCacheService : ICacheServiceWithEntryOptions
 {
     /// <summary>
     /// Gets or creates a cache entry.
@@ -18,6 +18,18 @@ public class NoOpCacheService : ICacheService
     /// <typeparam name="T"></typeparam>
     /// <returns></returns>
     public async Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory, TimeSpan expiration, CancellationToken cancellationToken = default)
+        => await factory();
+
+    /// <summary>
+    /// Gets or creates a cache entry with advanced options.
+    /// </summary>
+    /// <param name="key"></param>
+    /// <param name="factory"></param>
+    /// <param name="options"></param>
+    /// <param name="cancellationToken"></param>
+    /// <typeparam name="T"></typeparam>
+    /// <returns></returns>
+    public async Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory, CacheEntryOptions options, CancellationToken cancellationToken = default)
         => await factory();
 
     /// <summary>

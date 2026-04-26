@@ -17,9 +17,11 @@ This package provides MediatR pipeline behaviors that integrate with **TheTechLo
 | Component | Purpose |
 |-----------|---------|
 | `ICacheable` | Marker interface for queries that should be automatically cached |
+| `ITaggedCacheable` | Opt-in extension for cached queries that should be grouped by cache tags |
 | `ICacheInvalidatable` | Marker interface for commands that should invalidate cache after execution |
+| `ICacheTagInvalidatable` | Opt-in marker for commands that invalidate cache entries by tag |
 | `CachingBehavior<TRequest, TResponse>` | Pipeline behavior that intercepts `ICacheable` queries and caches responses |
-| `CacheInvalidationBehavior<TRequest, TResponse>` | Pipeline behavior that invalidates cache entries after `ICacheInvalidatable` commands succeed |
+| `CacheInvalidationBehavior<TRequest, TResponse>` | Pipeline behavior that invalidates cache entries after key, prefix, or tag invalidation commands succeed |
 | `AddTheTechLoopCacheBehaviors()` | DI extension method to register both behaviors |
 
 ---
@@ -89,7 +91,27 @@ public class GetDealershipByIdQueryHandler : IRequestHandler<GetDealershipByIdQu
 3. **Cache hit** → returns cached value immediately (handler is never called)
 4. **Cache miss** → calls the handler, caches the result, returns it
 
-### 3. Auto-Invalidate with `ICacheInvalidatable`
+### 3. Auto-Cache and Group Queries with `ITaggedCacheable`
+
+Use `ITaggedCacheable` when a query should be invalidated as part of a larger group:
+
+```csharp
+using TheTechLoop.HybridCache.MediatR.Abstractions;
+
+public record GetDealershipByIdQuery(int Id) : IRequest<Dealership?>, ITaggedCacheable
+{
+    public string CacheKey => $"Dealership:{Id}";
+    public TimeSpan CacheDuration => TimeSpan.FromMinutes(30);
+
+    public IReadOnlyList<string> CacheTags =>
+        ["Dealership", $"Dealership:{Id}"];
+}
+```
+
+Tags are scoped with the same service name and cache version as keys. For example, `"Dealership"` becomes `"company-svc:v1:Dealership"`.
+This means tag invalidation is per service/version scope unless services intentionally share the same cache scope.
+
+### 4. Auto-Invalidate with `ICacheInvalidatable`
 
 Mark MediatR commands to automatically invalidate cache entries after successful execution:
 
@@ -115,6 +137,22 @@ public record UpdateDealershipCommand(int Id, string Name) : IRequest<bool>, ICa
 4. Removes all keys matching the prefix patterns
 5. Publishes cross-service invalidation via Pub/Sub (if configured)
 
+### 5. Auto-Invalidate with `ICacheTagInvalidatable`
+
+Use tag invalidation when multiple query shapes should expire together:
+
+```csharp
+using TheTechLoop.HybridCache.MediatR.Abstractions;
+
+public record UpdateDealershipCommand(int Id, string Name) : IRequest<bool>, ICacheTagInvalidatable
+{
+    public IReadOnlyList<string> CacheTagsToInvalidate =>
+        ["Dealership", $"Dealership:{Id}"];
+}
+```
+
+When Pub/Sub or Redis Streams invalidation is configured, tag invalidation is also published to other service instances.
+
 ---
 
 ## How It Works
@@ -124,7 +162,7 @@ public record UpdateDealershipCommand(int Id, string Name) : IRequest<bool>, ICa
 ```
 Controller
   → MediatR.Send(GetDealershipByIdQuery)
-    → CachingBehavior intercepts (ICacheable detected)
+    → CachingBehavior intercepts (ICacheable / ITaggedCacheable detected)
       → ICacheService.GetOrCreateAsync("company-svc:v1:Dealership:42")
         → [Cache Hit]  → Return cached value (handler skipped)
         → [Cache Miss] → Execute handler → Cache result → Return
@@ -139,8 +177,10 @@ Controller
     → CacheInvalidationBehavior runs (ICacheInvalidatable detected)
       → ICacheService.RemoveAsync("company-svc:v1:Dealership:42")
       → ICacheService.RemoveByPrefixAsync("company-svc:v1:Dealership:Search")
+      → ICacheTagInvalidationService.RemoveByTagAsync("company-svc:v1:Dealership")
       → ICacheInvalidationPublisher.PublishAsync(key)         ← cross-service
       → ICacheInvalidationPublisher.PublishPrefixAsync(prefix) ← cross-service
+      → ICacheTagInvalidationPublisher.PublishTagAsync(tag)    ← cross-service
 ```
 
 ---
@@ -165,6 +205,19 @@ public interface ICacheable
 }
 ```
 
+### ITaggedCacheable
+
+```csharp
+public interface ITaggedCacheable : ICacheable
+{
+    /// <summary>
+    /// Logical cache tags for this request. Tags are automatically scoped with service name and version.
+    /// Example: ["Dealership", "Dealership:42"] → ["company-svc:v1:Dealership", "company-svc:v1:Dealership:42"]
+    /// </summary>
+    IReadOnlyList<string> CacheTags { get; }
+}
+```
+
 ### ICacheInvalidatable
 
 ```csharp
@@ -181,6 +234,19 @@ public interface ICacheInvalidatable
     /// Example: ["Dealership:Search", "Dealership:List"]
     /// </summary>
     IReadOnlyList<string> CachePrefixesToInvalidate { get; }
+}
+```
+
+### ICacheTagInvalidatable
+
+```csharp
+public interface ICacheTagInvalidatable
+{
+    /// <summary>
+    /// Logical cache tags to invalidate after the command succeeds.
+    /// Example: ["Dealership", "Dealership:42"]
+    /// </summary>
+    IReadOnlyList<string> CacheTagsToInvalidate { get; }
 }
 ```
 
@@ -249,7 +315,7 @@ app.Run();
 ## Requirements
 
 - .NET 10 or higher
-- [TheTechLoop.HybridCache](https://www.nuget.org/packages/TheTechLoop.HybridCache) 1.3.0+ (core cache library)
+- [TheTechLoop.HybridCache](https://www.nuget.org/packages/TheTechLoop.HybridCache) 1.5.0+ (core cache library)
 - [MediatR](https://www.nuget.org/packages/MediatR) 12.x
 
 ---

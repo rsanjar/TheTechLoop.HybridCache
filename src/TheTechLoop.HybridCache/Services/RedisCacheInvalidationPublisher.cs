@@ -10,7 +10,7 @@ namespace TheTechLoop.HybridCache.Services;
 /// Publishes cache invalidation events to all subscribed microservice instances
 /// via Redis Pub/Sub. Used on the CQRS write-path after successful commands.
 /// </summary>
-public class RedisCacheInvalidationPublisher : ICacheInvalidationPublisher
+public class RedisCacheInvalidationPublisher : ICacheInvalidationPublisher, ICacheTagInvalidationPublisher
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<RedisCacheInvalidationPublisher> _logger;
@@ -63,6 +63,23 @@ public class RedisCacheInvalidationPublisher : ICacheInvalidationPublisher
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to publish cache invalidation for prefix: {Prefix}", prefix);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task PublishTagAsync(string tag, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var subscriber = _redis.GetSubscriber();
+            var message = $"tag:{tag}";
+            await subscriber.PublishAsync(RedisChannel.Literal(_channel), message);
+
+            _logger.LogInformation("Published cache invalidation for tag: {Tag}", tag);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to publish cache invalidation for tag: {Tag}", tag);
         }
     }
 }

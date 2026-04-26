@@ -7,6 +7,7 @@ using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Configuration;
 using TheTechLoop.HybridCache.Metrics;
 using TheTechLoop.HybridCache.Serialization;
+using TheTechLoop.HybridCache.Tagging;
 
 namespace TheTechLoop.HybridCache.Services;
 
@@ -15,7 +16,7 @@ namespace TheTechLoop.HybridCache.Services;
 /// Optimal for CQRS read-heavy workloads where the same data is queried frequently
 /// by the same instance. L1 dramatically reduces Redis round-trips.
 /// </summary>
-public class MultiLevelCacheService : ICacheService
+public class MultiLevelCacheService : ICacheServiceWithEntryOptions
 {
     private readonly IMemoryCache _l1;
     private readonly IDistributedCache _l2;
@@ -25,6 +26,7 @@ public class MultiLevelCacheService : ICacheService
     private readonly CacheMetrics _metrics;
     private readonly CircuitBreakerState _circuitBreaker;
     private readonly ICacheSizeEstimator _sizeEstimator;
+    private readonly ICacheTagService? _tagService;
     private readonly RequestCoalescer _coalescer = new();
 
     /// <summary>
@@ -37,6 +39,7 @@ public class MultiLevelCacheService : ICacheService
     /// <param name="config"></param>
     /// <param name="metrics"></param>
     /// <param name="sizeEstimator">Optional pluggable size estimator for L1 eviction</param>
+    /// <param name="tagService">Optional tag service for group invalidation</param>
     public MultiLevelCacheService(
         IMemoryCache l1Cache,
         IDistributedCache l2Cache,
@@ -44,7 +47,8 @@ public class MultiLevelCacheService : ICacheService
         ILogger<MultiLevelCacheService> logger,
         IOptions<CacheConfig> config,
         CacheMetrics metrics,
-        ICacheSizeEstimator? sizeEstimator = null)
+        ICacheSizeEstimator? sizeEstimator = null,
+        ICacheTagService? tagService = null)
     {
         _l1 = l1Cache;
         _l2 = l2Cache;
@@ -53,6 +57,7 @@ public class MultiLevelCacheService : ICacheService
         _config = config.Value;
         _metrics = metrics;
         _sizeEstimator = sizeEstimator ?? new DefaultCacheSizeEstimator();
+        _tagService = tagService;
         _circuitBreaker = new CircuitBreakerState(
             _config.CircuitBreaker.BreakDurationSeconds,
             _config.CircuitBreaker.FailureThreshold,
@@ -69,6 +74,18 @@ public class MultiLevelCacheService : ICacheService
         string key,
         Func<Task<T>> factory,
         TimeSpan expiration,
+        CancellationToken cancellationToken = default)
+        => await GetOrCreateAsync(
+            key,
+            factory,
+            CacheEntryOptions.Absolute(expiration),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<T> GetOrCreateAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        CacheEntryOptions options,
         CancellationToken cancellationToken = default)
     {
         if (!_config.Enabled)
@@ -121,7 +138,7 @@ public class MultiLevelCacheService : ICacheService
         // Coalesce in-process callers: only one thread per key enters
         // the lock + factory path; the rest await the same Task.
         return await _coalescer.CoalesceAsync(key, () =>
-            PopulateMultiLevelAsync(key, factory, expiration, cancellationToken));
+            PopulateMultiLevelAsync(key, factory, options, cancellationToken));
     }
 
     /// <summary>
@@ -132,7 +149,7 @@ public class MultiLevelCacheService : ICacheService
     private async Task<T> PopulateMultiLevelAsync<T>(
         string key,
         Func<Task<T>> factory,
-        TimeSpan expiration,
+        CacheEntryOptions options,
         CancellationToken cancellationToken)
     {
         // Re-check L1 (may have been populated by another coalesced caller)
@@ -199,8 +216,9 @@ public class MultiLevelCacheService : ICacheService
         var result = await factory();
 
         // Write to both levels
-        SetL1(key, result);
-        await SetL2SafeAsync(key, result, expiration, cancellationToken);
+        SetL1(key, result, options);
+        if (await SetL2SafeAsync(key, result, options.Expiration, cancellationToken))
+            await AddTagsAsync(key, options.Tags, cancellationToken);
 
         return result;
     }
@@ -266,23 +284,9 @@ public class MultiLevelCacheService : ICacheService
         if (!_config.Enabled || value is null)
             return;
 
-        // L1 supports sliding expiration natively
-        if (options.ExpirationType == CacheExpirationType.Sliding)
-        {
-            var l1Options = new MemoryCacheEntryOptions
-            {
-                SlidingExpiration = options.Expiration,
-                Size = _sizeEstimator.EstimateSize(value),
-                Priority = CacheItemPriority.Normal
-            };
-            _l1.Set(key, value, l1Options);
-        }
-        else
-        {
-            SetL1(key, value);
-        }
-
-        await SetL2SafeAsync(key, value, options.Expiration, cancellationToken);
+        SetL1(key, value, options);
+        if (await SetL2SafeAsync(key, value, options.Expiration, cancellationToken))
+            await AddTagsAsync(key, options.Tags, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -297,6 +301,9 @@ public class MultiLevelCacheService : ICacheService
         try
         {
             await _l2.RemoveAsync(key, cancellationToken);
+            if (_tagService is not null)
+                await _tagService.RemoveAsync(key, cancellationToken);
+
             _metrics.RecordEviction(key);
         }
         catch (Exception ex)
@@ -305,7 +312,10 @@ public class MultiLevelCacheService : ICacheService
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Prefix removal is handled by invalidation subscribers using Redis SCAN.
+    /// Direct calls do not enumerate local L1 entries or distributed L2 keys.
+    /// </summary>
     public async Task RemoveByPrefixAsync(string prefix, CancellationToken cancellationToken = default)
     {
         // L1: IMemoryCache doesn't support prefix-based removal natively.
@@ -468,14 +478,41 @@ public class MultiLevelCacheService : ICacheService
         _l1.Set(key, value, l1Options);
     }
 
-    private async Task SetL2SafeAsync<T>(
+    private void SetL1<T>(string key, T value, CacheEntryOptions options)
+    {
+        if (!_config.MemoryCache.Enabled || value is null)
+            return;
+
+        if (options.ExpirationType == CacheExpirationType.Sliding)
+        {
+            var l1Options = new MemoryCacheEntryOptions
+            {
+                SlidingExpiration = options.Expiration,
+                Size = _sizeEstimator.EstimateSize(value),
+                Priority = CacheItemPriority.Normal
+            };
+            _l1.Set(key, value, l1Options);
+            return;
+        }
+
+        var absoluteOptions = new MemoryCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = options.Expiration,
+            Size = _sizeEstimator.EstimateSize(value),
+            Priority = CacheItemPriority.Normal
+        };
+
+        _l1.Set(key, value, absoluteOptions);
+    }
+
+    private async Task<bool> SetL2SafeAsync<T>(
         string key,
         T value,
         TimeSpan? expiration,
         CancellationToken cancellationToken)
     {
         if (IsCircuitOpen() || value is null || EqualityComparer<T>.Default.Equals(value, default))
-            return;
+            return false;
 
         try
         {
@@ -487,12 +524,22 @@ public class MultiLevelCacheService : ICacheService
 
             await _l2.SetAsync(key, bytes, options, cancellationToken);
             _circuitBreaker.RecordSuccess();
+            return true;
         }
         catch (Exception ex)
         {
             _circuitBreaker.RecordFailure();
             _logger.LogWarning(ex, "Failed to write to L2 cache for key: {Key}", key);
+            return false;
         }
+    }
+
+    private async Task AddTagsAsync(string key, IReadOnlyList<string> tags, CancellationToken cancellationToken)
+    {
+        if (_tagService is null || !tags.Any())
+            return;
+
+        await _tagService.AddTagsAsync(key, tags, cancellationToken);
     }
 
     private bool IsCircuitOpen()

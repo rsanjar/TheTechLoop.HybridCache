@@ -8,10 +8,12 @@ namespace TheTechLoop.HybridCache.Tests.Compression;
 public class CompressedCacheServiceTests
 {
     private readonly Mock<ICacheService> _innerMock;
+    private readonly Mock<ICacheServiceWithEntryOptions> _entryOptionsInnerMock;
 
     public CompressedCacheServiceTests()
     {
         _innerMock = new Mock<ICacheService>();
+        _entryOptionsInnerMock = new Mock<ICacheServiceWithEntryOptions>();
     }
 
     #region SetAsync + GetAsync round-trip
@@ -210,6 +212,36 @@ public class CompressedCacheServiceTests
             TimeSpan.FromMinutes(5));
 
         result.Should().Be(new string('X', 200));
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_WithEntryOptions_DelegatesCompressedFactoryToInner()
+    {
+        byte[]? stored = null;
+        var options = CacheEntryOptions.Absolute(TimeSpan.FromMinutes(5), "tag-a");
+
+        _entryOptionsInnerMock
+            .Setup(s => s.GetOrCreateAsync(It.IsAny<string>(), It.IsAny<Func<Task<byte[]>>>(),
+                It.IsAny<CacheEntryOptions>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, Func<Task<byte[]>> factory, CacheEntryOptions _, CancellationToken _) =>
+            {
+                stored ??= await factory();
+                return stored;
+            });
+
+        var sut = new CompressedCacheService(_entryOptionsInnerMock.Object, compressionThresholdBytes: 10);
+
+        var result = await sut.GetOrCreateAsync(
+            "key",
+            async () => new string('X', 200),
+            options);
+
+        result.Should().Be(new string('X', 200));
+        _entryOptionsInnerMock.Verify(s => s.GetOrCreateAsync(
+            "key",
+            It.IsAny<Func<Task<byte[]>>>(),
+            options,
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     #endregion

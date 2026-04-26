@@ -33,6 +33,8 @@ public sealed class CacheInvalidationBehavior<TRequest, TResponse> : IPipelineBe
 
     private readonly ICacheService _cache;
     private readonly ICacheInvalidationPublisher? _publisher;
+    private readonly ICacheTagInvalidationService? _tagInvalidationService;
+    private readonly ICacheTagInvalidationPublisher? _tagPublisher;
     private readonly CacheKeyBuilder _keyBuilder;
     private readonly ILogger<CacheInvalidationBehavior<TRequest, TResponse>> _logger;
 
@@ -46,16 +48,22 @@ public sealed class CacheInvalidationBehavior<TRequest, TResponse> : IPipelineBe
     /// Optional Pub/Sub publisher for cross-service invalidation.
     /// Null when <c>AddTheTechLoopCacheInvalidation()</c> is not registered.
     /// </param>
+    /// <param name="tagInvalidationService">Optional tag invalidation service for local tag invalidation.</param>
+    /// <param name="tagPublisher">Optional Pub/Sub publisher for cross-service tag invalidation.</param>
     public CacheInvalidationBehavior(
         ICacheService cache,
         CacheKeyBuilder keyBuilder,
         ILogger<CacheInvalidationBehavior<TRequest, TResponse>> logger,
-        ICacheInvalidationPublisher? publisher = null)
+        ICacheInvalidationPublisher? publisher = null,
+        ICacheTagInvalidationService? tagInvalidationService = null,
+        ICacheTagInvalidationPublisher? tagPublisher = null)
     {
         _cache = cache;
         _keyBuilder = keyBuilder;
         _logger = logger;
         _publisher = publisher;
+        _tagInvalidationService = tagInvalidationService;
+        _tagPublisher = tagPublisher;
     }
 
     /// <inheritdoc />
@@ -68,15 +76,19 @@ public sealed class CacheInvalidationBehavior<TRequest, TResponse> : IPipelineBe
         var response = await next(cancellationToken);
 
         // Only invalidate after successful execution
-        if (request is not ICacheInvalidatable invalidatable)
+        var invalidatable = request as ICacheInvalidatable;
+        var tagInvalidatable = request as ICacheTagInvalidatable;
+
+        if (invalidatable is null && tagInvalidatable is null)
             return response;
 
         _logger.LogDebug(
             "CacheInvalidationBehavior processing {RequestType}: " +
-            "{KeyCount} keys, {PrefixCount} prefixes",
+            "{KeyCount} keys, {PrefixCount} prefixes, {TagCount} tags",
             typeof(TRequest).Name,
-            invalidatable.CacheKeysToInvalidate.Count,
-            invalidatable.CachePrefixesToInvalidate.Count);
+            invalidatable?.CacheKeysToInvalidate.Count ?? 0,
+            invalidatable?.CachePrefixesToInvalidate.Count ?? 0,
+            tagInvalidatable?.CacheTagsToInvalidate.Count ?? 0);
 
         // Use a short timeout so a Redis reconnect delay never blocks the HTTP response.
         // Invalidation is best-effort: a stale cache entry will expire on its own.
@@ -84,26 +96,59 @@ public sealed class CacheInvalidationBehavior<TRequest, TResponse> : IPipelineBe
         timeoutCts.CancelAfter(InvalidationTimeout);
         var ct = timeoutCts.Token;
 
-        // Invalidate exact keys
-        foreach (var key in invalidatable.CacheKeysToInvalidate)
+        if (invalidatable is not null)
         {
-            var scopedKey = _keyBuilder.Key(key);
+            // Invalidate exact keys
+            foreach (var key in invalidatable.CacheKeysToInvalidate)
+            {
+                var scopedKey = _keyBuilder.Key(key);
 
-            await _cache.RemoveAsync(scopedKey, ct);
+                await _cache.RemoveAsync(scopedKey, ct);
 
-            if (_publisher is not null)
-                await _publisher.PublishAsync(scopedKey, ct);
+                if (_publisher is not null)
+                    await _publisher.PublishAsync(scopedKey, ct);
+            }
+
+            // Invalidate prefix patterns
+            foreach (var prefix in invalidatable.CachePrefixesToInvalidate)
+            {
+                var scopedPrefix = _keyBuilder.Key(prefix);
+
+                await _cache.RemoveByPrefixAsync(scopedPrefix, ct);
+
+                if (_publisher is not null)
+                    await _publisher.PublishPrefixAsync(scopedPrefix, ct);
+            }
         }
 
-        // Invalidate prefix patterns
-        foreach (var prefix in invalidatable.CachePrefixesToInvalidate)
+        if (tagInvalidatable is not null)
         {
-            var scopedPrefix = _keyBuilder.Key(prefix);
+            foreach (var tag in tagInvalidatable.CacheTagsToInvalidate)
+            {
+                var scopedTag = _keyBuilder.Key(tag);
 
-            await _cache.RemoveByPrefixAsync(scopedPrefix, ct);
+                if (_tagInvalidationService is not null)
+                {
+                    await _tagInvalidationService.RemoveByTagAsync(scopedTag, ct);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Tag invalidation service is not registered. Skipping local invalidation for tag: {Tag}",
+                        scopedTag);
+                }
 
-            if (_publisher is not null)
-                await _publisher.PublishPrefixAsync(scopedPrefix, ct);
+                if (_tagPublisher is not null)
+                {
+                    await _tagPublisher.PublishTagAsync(scopedTag, ct);
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "Tag invalidation publisher is not registered. Skipping cross-service invalidation for tag: {Tag}",
+                        scopedTag);
+                }
+            }
         }
 
         return response;

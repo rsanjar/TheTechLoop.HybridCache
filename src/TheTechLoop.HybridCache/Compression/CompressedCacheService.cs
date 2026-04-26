@@ -14,11 +14,11 @@ namespace TheTechLoop.HybridCache.Compression;
 ///   <item><c>0x00</c> — payload is raw UTF-8 JSON bytes</item>
 ///   <item><c>0x01</c> — payload is GZip-compressed UTF-8 JSON bytes</item>
 /// </list>
-/// Stored as <c>byte[]</c> through the inner service, eliminating the
-/// Base64 overhead of the previous string-based format.
+/// Stored as <c>byte[]</c> through the inner service; depending on the inner
+/// serializer this may still be represented as Base64 JSON at rest.
 /// </para>
 /// </summary>
-public class CompressedCacheService : ICacheService
+public class CompressedCacheService : ICacheServiceWithEntryOptions
 {
     private readonly ICacheService _inner;
     private readonly int _compressionThresholdBytes;
@@ -54,6 +54,29 @@ public class CompressedCacheService : ICacheService
             key,
             async () => await PackAsync(await factory(), cancellationToken),
             expiration,
+            cancellationToken);
+
+        return Unpack<T>(cachedBytes)!;
+    }
+
+    /// <inheritdoc />
+    public async Task<T> GetOrCreateAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        CacheEntryOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        if (_inner is not ICacheServiceWithEntryOptions entryOptionsCache)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(CompressedCacheService)} requires an inner {nameof(ICacheServiceWithEntryOptions)} " +
+                "to use read-through caching with CacheEntryOptions.");
+        }
+
+        var cachedBytes = await entryOptionsCache.GetOrCreateAsync(
+            key,
+            async () => await PackAsync(await factory(), cancellationToken),
+            options,
             cancellationToken);
 
         return Unpack<T>(cachedBytes)!;

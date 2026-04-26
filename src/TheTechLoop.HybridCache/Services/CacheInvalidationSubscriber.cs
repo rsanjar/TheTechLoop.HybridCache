@@ -6,8 +6,10 @@ using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using System.Diagnostics;
 using System.Threading.Channels;
+using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Configuration;
 using TheTechLoop.HybridCache.Metrics;
+using TheTechLoop.HybridCache.Tagging;
 
 namespace TheTechLoop.HybridCache.Services;
 
@@ -27,6 +29,8 @@ public class CacheInvalidationSubscriber : BackgroundService
     private readonly IMemoryCache? _memoryCache;
     private readonly ILogger<CacheInvalidationSubscriber> _logger;
     private readonly CacheMetrics _metrics;
+    private readonly ICacheTagInvalidationService? _tagInvalidationService;
+    private readonly ICacheTagService? _tagService;
     private readonly string _channel;
     private readonly string _instanceName;
 
@@ -45,20 +49,27 @@ public class CacheInvalidationSubscriber : BackgroundService
     /// <param name="distributedCache"></param>
     /// <param name="logger"></param>
     /// <param name="config"></param>
+    /// <param name="metrics"></param>
     /// <param name="memoryCache"></param>
+    /// <param name="tagInvalidationService"></param>
+    /// <param name="tagService"></param>
     public CacheInvalidationSubscriber(
         IConnectionMultiplexer redis,
         IDistributedCache distributedCache,
         ILogger<CacheInvalidationSubscriber> logger,
         IOptions<CacheConfig> config,
         CacheMetrics metrics,
-        IMemoryCache? memoryCache = null)
+        IMemoryCache? memoryCache = null,
+        ICacheTagInvalidationService? tagInvalidationService = null,
+        ICacheTagService? tagService = null)
     {
         _redis = redis;
         _distributedCache = distributedCache;
         _logger = logger;
         _metrics = metrics;
         _memoryCache = memoryCache;
+        _tagInvalidationService = tagInvalidationService;
+        _tagService = tagService;
         _channel = config.Value.InvalidationChannel;
         _instanceName = config.Value.InstanceName ?? string.Empty;
     }
@@ -116,6 +127,9 @@ public class CacheInvalidationSubscriber : BackgroundService
             var key = payload[4..];
             _memoryCache?.Remove(key);
             await _distributedCache.RemoveAsync(key, ct);
+            if (_tagService is not null)
+                await _tagService.RemoveAsync(key, ct);
+
             _logger.LogDebug("Invalidated cache key: {Key}", key);
         }
         else if (payload.StartsWith("prefix:"))
@@ -129,6 +143,21 @@ public class CacheInvalidationSubscriber : BackgroundService
 
             // Prefix-based deletion via Redis SCAN
             await RemoveByPrefixViaScanAsync(prefix, ct);
+        }
+        else if (payload.StartsWith("tag:"))
+        {
+            var tag = payload[4..];
+            if (_tagInvalidationService is not null)
+            {
+                await _tagInvalidationService.RemoveByTagAsync(tag, ct);
+                _logger.LogDebug("Invalidated cache tag: {Tag}", tag);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Received tag invalidation for {Tag}, but no tag invalidation service is registered",
+                    tag);
+            }
         }
     }
 

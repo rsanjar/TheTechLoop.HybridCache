@@ -35,8 +35,9 @@ public interface ICacheService
     Task RemoveAsync(string key, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Removes all keys matching a prefix pattern using Redis SCAN.
-    /// Useful for invalidating entity groups (e.g., all dealership keys).
+    /// Removes all keys matching a prefix pattern when supported by the implementation.
+    /// Redis-backed services rely on the invalidation subscriber's SCAN path for
+    /// immediate distributed prefix deletion.
     /// </summary>
     Task RemoveByPrefixAsync(string prefix, CancellationToken cancellationToken = default);
 
@@ -56,4 +57,21 @@ public interface ICacheService
     /// More efficient than calling SetAsync multiple times.
     /// </summary>
     Task SetManyAsync<T>(Dictionary<string, T> items, TimeSpan? expiration = null, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Extends <see cref="ICacheService"/> with read-through caching that accepts
+/// advanced entry options such as sliding expiration and tags.
+/// </summary>
+public interface ICacheServiceWithEntryOptions : ICacheService
+{
+    /// <summary>
+    /// Gets a value from cache or creates it using the factory function with
+    /// advanced cache entry options.
+    /// </summary>
+    Task<T> GetOrCreateAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        CacheEntryOptions options,
+        CancellationToken cancellationToken = default);
 }
