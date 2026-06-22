@@ -8,7 +8,7 @@
 
 		<!-- NuGet Package Metadata -->
 		<PackageId>TheTechLoop.HybridCache</PackageId>
-		<Version>1.5.0</Version>
+		<Version>1.5.1</Version>
 		<Authors>Sanjar Rahmatov</Authors>
 		<Company>TheTechLoop</Company>
 		<Description>Enterprise-grade distributed Redis caching library for microservices. Features include multi-level caching (L1 Memory + L2 Redis), distributed locking, cache stampede prevention, cross-service cache invalidation via Pub/Sub, circuit breaker pattern, CQRS-optimized caching, and OpenTelemetry metrics.</Description>
@@ -27,13 +27,13 @@
 
 	<ItemGroup>
 		<PackageReference Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
-		<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.7" />
-		<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.7" />
-		<PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.7" />
-		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.7" />
-		<PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.7" />
-		<PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.7" />
-		<PackageReference Include="StackExchange.Redis" Version="2.12.14" />
+		<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.9" />
+		<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.9" />
+		<PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.9" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.9" />
+		<PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.9" />
+		<PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.9" />
+		<PackageReference Include="StackExchange.Redis" Version="3.0.0" />
 	</ItemGroup>
 
 	<ItemGroup>
