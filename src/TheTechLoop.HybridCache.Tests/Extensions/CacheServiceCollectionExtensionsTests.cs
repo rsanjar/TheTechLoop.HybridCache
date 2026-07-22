@@ -4,6 +4,8 @@ using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -19,6 +21,41 @@ namespace TheTechLoop.HybridCache.Tests.Extensions;
 
 public class CacheServiceCollectionExtensionsTests
 {
+    [Fact]
+    public async Task AddTheTechLoopCache_HealthCheck_ReusesRegisteredConnectionMultiplexer()
+    {
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TheTechLoopCache:Configuration"] =
+                    "redis:6379,user=default,password=secret,defaultDatabase=15,ssl=false,abortConnect=false",
+                ["TheTechLoopCache:InstanceName"] = "test:",
+                ["TheTechLoopCache:ServiceName"] = "test-svc",
+                ["TheTechLoopCache:Enabled"] = "true"
+            })
+            .Build();
+
+        var connectionMultiplexer = new Mock<IConnectionMultiplexer>();
+
+        services.AddLogging();
+        services.AddTheTechLoopCache(configuration);
+        services.RemoveAll<IConnectionMultiplexer>();
+        services.AddSingleton(connectionMultiplexer.Object);
+
+        using var provider = services.BuildServiceProvider();
+        var healthCheckService = provider.GetRequiredService<HealthCheckService>();
+
+        var report = await healthCheckService.CheckHealthAsync(
+            registration => registration.Name == "redis-cache",
+            TestContext.Current.CancellationToken);
+
+        report.Status.Should().Be(HealthStatus.Healthy);
+        connectionMultiplexer.Verify(
+            instance => instance.GetEndPoints(It.IsAny<bool>()),
+            Times.Once);
+    }
+
     [Fact]
     public void AddTheTechLoopCacheInvalidation_WithStreams_RegistersMediatRPublisherInterfaces()
     {

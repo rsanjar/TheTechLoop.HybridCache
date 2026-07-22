@@ -153,7 +153,7 @@ public static class CacheServiceCollectionExtensions
             {
                 services.AddHealthChecks()
                     .AddRedis(
-                        config.Configuration.Split(',')[0],
+                        sp => sp.GetRequiredService<IConnectionMultiplexer>(),
                         name: "redis-cache",
                         tags: ["cache", "redis", "ready"]);
             }
