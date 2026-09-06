@@ -23,6 +23,7 @@ public class CompressedCacheService : ICacheServiceWithEntryOptions
     private readonly ICacheService _inner;
     private readonly int _compressionThresholdBytes;
     private readonly CompressionLevel _compressionLevel;
+    private readonly ICacheSerializer _serializer;
 
     private const byte HeaderRaw = 0x00;
     private const byte HeaderGzip = 0x01;
@@ -37,7 +38,13 @@ public class CompressedCacheService : ICacheServiceWithEntryOptions
         ICacheService inner,
         int compressionThresholdBytes = 1024,
         CompressionLevel compressionLevel = CompressionLevel.Fastest)
+        : this(inner, compressionThresholdBytes, compressionLevel, new SystemTextJsonCacheSerializer()) { }
+
+    /// <summary>Creates a compression decorator using the same serializer as the inner cache.</summary>
+    public CompressedCacheService(ICacheService inner, int compressionThresholdBytes,
+        CompressionLevel compressionLevel, ICacheSerializer serializer)
     {
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _inner = inner;
         _compressionThresholdBytes = compressionThresholdBytes;
         _compressionLevel = compressionLevel;
@@ -169,7 +176,7 @@ public class CompressedCacheService : ICacheServiceWithEntryOptions
     /// </summary>
     private async Task<byte[]> PackAsync<T>(T value, CancellationToken cancellationToken)
     {
-        var jsonBytes = CacheSerializer.Serialize(value);
+        var jsonBytes = _serializer.Serialize(value);
 
         if (jsonBytes.Length <= _compressionThresholdBytes)
         {
@@ -194,7 +201,7 @@ public class CompressedCacheService : ICacheServiceWithEntryOptions
     /// Reads the 1-byte header and either returns the raw JSON slice
     /// or GZip-decompresses the payload, then deserializes to <typeparamref name="T"/>.
     /// </summary>
-    private static T? Unpack<T>(byte[] data)
+    private T? Unpack<T>(byte[] data)
     {
         if (data is not { Length: > 1 })
             return default;
@@ -203,7 +210,7 @@ public class CompressedCacheService : ICacheServiceWithEntryOptions
         var payload = data.AsSpan(1);
 
         if (header == HeaderRaw)
-            return CacheSerializer.Deserialize<T>(payload);
+            return _serializer.Deserialize<T>(payload);
 
         if (header == HeaderGzip)
         {
@@ -213,7 +220,7 @@ public class CompressedCacheService : ICacheServiceWithEntryOptions
 
             gzipStream.CopyTo(outputStream);
 
-            return CacheSerializer.Deserialize<T>(outputStream.ToArray());
+            return _serializer.Deserialize<T>(outputStream.ToArray());
         }
 
         return default;

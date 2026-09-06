@@ -2,6 +2,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using TheTechLoop.HybridCache.Abstractions;
 using TheTechLoop.HybridCache.Compression;
@@ -12,6 +15,7 @@ using TheTechLoop.HybridCache.Services;
 using TheTechLoop.HybridCache.Streams;
 using TheTechLoop.HybridCache.Tagging;
 using TheTechLoop.HybridCache.Warming;
+using TheTechLoop.HybridCache.Serialization;
 
 namespace TheTechLoop.HybridCache.Extensions;
 
@@ -42,6 +46,9 @@ public static class CacheServiceCollectionExtensions
                 .ValidateOnStart();
 
             var config = configuration.GetSection(configSectionName).Get<CacheConfig>() ?? new CacheConfig();
+
+            services.AddOptions<CacheSerializationOptions>();
+            services.TryAddSingleton<ICacheSerializer, SystemTextJsonCacheSerializer>();
 
             // Register CacheMetrics (requires IMeterFactory which is registered by default in .NET 8+)
             services.AddSingleton<CacheMetrics>();
@@ -126,7 +133,10 @@ public static class CacheServiceCollectionExtensions
             }
 
             // Register cache service (single-level Redis)
-            services.AddSingleton<RedisCacheService>();
+            services.AddSingleton(sp => new RedisCacheService(
+                sp.GetRequiredService<IDistributedCache>(), sp.GetRequiredService<IDistributedLock>(),
+                sp.GetRequiredService<ILogger<RedisCacheService>>(), sp.GetRequiredService<IOptions<CacheConfig>>(),
+                sp.GetRequiredService<CacheMetrics>(), sp.GetService<ICacheTagService>(), sp.GetRequiredService<ICacheSerializer>()));
             services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<RedisCacheService>());
             services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<RedisCacheService>());
 
@@ -141,7 +151,8 @@ public static class CacheServiceCollectionExtensions
                     services.AddSingleton<CompressedCacheService>(sp =>
                     {
                         var inner = sp.GetRequiredService<RedisCacheService>();
-                        return new CompressedCacheService(inner, config.CompressionThresholdBytes, config.CompressionLevel);
+                        return new CompressedCacheService(inner, config.CompressionThresholdBytes, config.CompressionLevel,
+                            sp.GetRequiredService<ICacheSerializer>());
                     });
                     services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<CompressedCacheService>());
                     services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<CompressedCacheService>());
@@ -189,7 +200,11 @@ public static class CacheServiceCollectionExtensions
                 services.Remove(existing);
 
             services.RemoveAll<ICacheServiceWithEntryOptions>();
-            services.AddSingleton<MultiLevelCacheService>();
+            services.AddSingleton(sp => new MultiLevelCacheService(
+                sp.GetRequiredService<IMemoryCache>(), sp.GetRequiredService<IDistributedCache>(),
+                sp.GetRequiredService<IDistributedLock>(), sp.GetRequiredService<ILogger<MultiLevelCacheService>>(),
+                sp.GetRequiredService<IOptions<CacheConfig>>(), sp.GetRequiredService<CacheMetrics>(),
+                sp.GetService<ICacheSizeEstimator>(), sp.GetService<ICacheTagService>(), sp.GetRequiredService<ICacheSerializer>()));
             services.AddSingleton<ICacheService>(sp => sp.GetRequiredService<MultiLevelCacheService>());
             services.AddSingleton<ICacheServiceWithEntryOptions>(sp => sp.GetRequiredService<MultiLevelCacheService>());
 

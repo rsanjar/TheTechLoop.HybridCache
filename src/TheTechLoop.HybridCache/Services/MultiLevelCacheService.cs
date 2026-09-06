@@ -28,6 +28,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
     private readonly ICacheSizeEstimator _sizeEstimator;
     private readonly ICacheTagService? _tagService;
     private readonly RequestCoalescer _coalescer = new();
+    private readonly ICacheSerializer _serializer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MultiLevelCacheService"/> class.
@@ -49,7 +50,15 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
         CacheMetrics metrics,
         ICacheSizeEstimator? sizeEstimator = null,
         ICacheTagService? tagService = null)
+        : this(l1Cache, l2Cache, distributedLock, logger, config, metrics, sizeEstimator, tagService,
+            new SystemTextJsonCacheSerializer()) { }
+
+    /// <summary>Creates a multi-level cache with an explicitly supplied, thread-safe serializer.</summary>
+    public MultiLevelCacheService(IMemoryCache l1Cache, IDistributedCache l2Cache, IDistributedLock distributedLock,
+        ILogger<MultiLevelCacheService> logger, IOptions<CacheConfig> config, CacheMetrics metrics,
+        ICacheSizeEstimator? sizeEstimator, ICacheTagService? tagService, ICacheSerializer serializer)
     {
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _l1 = l1Cache;
         _l2 = l2Cache;
         _lock = distributedLock;
@@ -115,7 +124,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
                     _metrics.RecordHit(key, sw.Elapsed.TotalMilliseconds, "L2");
                     LogDebug("L2 cache hit for key: {Key}", key);
 
-                    var l2Value = CacheSerializer.Deserialize<T>(l2Bytes)!;
+                    var l2Value = _serializer.Deserialize<T>(l2Bytes)!;
 
                     // Promote to L1
                     SetL1(key, l2Value);
@@ -164,7 +173,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
                 var l2Bytes = await _l2.GetAsync(key, cancellationToken);
                 if (l2Bytes is { Length: > 0 })
                 {
-                    var l2Value = CacheSerializer.Deserialize<T>(l2Bytes)!;
+                    var l2Value = _serializer.Deserialize<T>(l2Bytes)!;
                     SetL1(key, l2Value);
                     _circuitBreaker.RecordSuccess();
                     return l2Value;
@@ -192,7 +201,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
                     var retryBytes = await _l2.GetAsync(key, cancellationToken);
                     if (retryBytes is { Length: > 0 })
                     {
-                        var value = CacheSerializer.Deserialize<T>(retryBytes)!;
+                        var value = _serializer.Deserialize<T>(retryBytes)!;
                         SetL1(key, value);
                         return (true, value);
                     }
@@ -244,7 +253,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
             if (l2Bytes is not { Length: > 0 })
                 return default;
 
-            var value = CacheSerializer.Deserialize<T>(l2Bytes);
+            var value = _serializer.Deserialize<T>(l2Bytes);
 
             if (value is not null)
                 SetL1(key, value);
@@ -389,7 +398,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
 
                         if (data is { Length: > 0 })
                         {
-                            var value = CacheSerializer.Deserialize<T>(data);
+                            var value = _serializer.Deserialize<T>(data);
                             result[key] = value;
                             // Promote to L1
                             if (value is not null)
@@ -446,7 +455,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
                 {
                     var tasks = chunk.Select(kvp =>
                     {
-                        var bytes = CacheSerializer.Serialize(kvp.Value);
+                        var bytes = _serializer.Serialize(kvp.Value);
                         return _l2.SetAsync(kvp.Key, bytes, options, cancellationToken);
                     }).ToArray();
 
@@ -516,7 +525,7 @@ public class MultiLevelCacheService : ICacheServiceWithEntryOptions
 
         try
         {
-            var bytes = CacheSerializer.Serialize(value);
+            var bytes = _serializer.Serialize(value);
             var options = new DistributedCacheEntryOptions
             {
                 AbsoluteExpirationRelativeToNow = expiration ?? TimeSpan.FromMinutes(_config.DefaultExpirationMinutes)

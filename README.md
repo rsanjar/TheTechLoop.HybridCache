@@ -145,6 +145,28 @@ builder.Services.AddTheTechLoopMultiLevelCache(builder.Configuration);
 
 ---
 
+## Cache serialization configuration (unreleased)
+
+Cache bytes use their own serializer; registering an MVC/SignalR JSON converter does not configure Redis. For domain types such as SmartEnums, configure the per-container options before resolving cache services:
+
+```csharp
+using TheTechLoop.HybridCache.Configuration;
+
+services.Configure<CacheSerializationOptions>(options =>
+{
+    options.JsonSerializerOptions.Converters.Add(new MyDomainEnumJsonConverter());
+});
+services.AddTheTechLoopCache(configuration);
+```
+
+`SystemTextJsonCacheSerializer` copies and freezes these options. Settings are not global and do not leak between service providers. Converters must be thread-safe. The same serializer is used by Redis read-through/direct/batch operations, multi-level L2 reads/writes, and raw/GZip compression. Memory-only values require no serialization.
+
+For a different format, register a thread-safe singleton `ICacheSerializer` before `AddTheTechLoopCache`; the default registration will not replace it. Custom serializers must round-trip `byte[]` because the compression decorator stores packed bytes through its inner cache. The optional span reader can avoid a copy on raw compression payloads.
+
+Without configuration, existing JSON bytes and public constructor signatures remain compatible. The static `CacheSerializer` helper and `CacheJsonOptions.Default` remain independent legacy utilities; changing them is not how DI cache services are configured. Existing constructor overloads use defaults; new overloads accept an explicit serializer.
+
+Changing converters can change stored bytes. Use a new cache namespace/version when adopting a new representation; do not flush unrelated caches. This capability is source-only until the next NuGet release. Package versions have not been bumped or published by this change.
+
 ## 📋 Usage Scenarios
 
 TheTechLoop.HybridCache supports 10 comprehensive usage scenarios. Visit the `/UsageScenarios` folder for detailed documentation with complete code examples.

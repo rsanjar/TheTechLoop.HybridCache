@@ -24,6 +24,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
     private readonly CircuitBreakerState _circuitBreaker;
     private readonly ICacheTagService? _tagService;
     private readonly RequestCoalescer _coalescer = new();
+    private readonly ICacheSerializer _serializer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RedisCacheService"/> class.
@@ -41,7 +42,14 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
         IOptions<CacheConfig> config,
         CacheMetrics metrics,
         ICacheTagService? tagService = null)
+        : this(cache, distributedLock, logger, config, metrics, tagService, new SystemTextJsonCacheSerializer()) { }
+
+    /// <summary>Creates a Redis cache with an explicitly supplied, thread-safe serializer.</summary>
+    public RedisCacheService(IDistributedCache cache, IDistributedLock distributedLock,
+        ILogger<RedisCacheService> logger, IOptions<CacheConfig> config, CacheMetrics metrics,
+        ICacheTagService? tagService, ICacheSerializer serializer)
     {
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _cache = cache;
         _lock = distributedLock;
         _logger = logger;
@@ -109,7 +117,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
                 LogDebug("Cache hit for key: {Key}", key);
 
                 _circuitBreaker.RecordSuccess();
-                return CacheSerializer.Deserialize<T>(cachedBytes)!;
+                return _serializer.Deserialize<T>(cachedBytes)!;
             }
 
             sw.Stop();
@@ -147,7 +155,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
         if (cachedBytes is { Length: > 0 })
         {
             _circuitBreaker.RecordSuccess();
-            return CacheSerializer.Deserialize<T>(cachedBytes)!;
+            return _serializer.Deserialize<T>(cachedBytes)!;
         }
 
         // Stampede protection: acquire lock or poll until populated
@@ -158,7 +166,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
             {
                 var bytes = await _cache.GetAsync(key, cancellationToken);
                 if (bytes is { Length: > 0 })
-                    return (true, CacheSerializer.Deserialize<T>(bytes)!);
+                    return (true, _serializer.Deserialize<T>(bytes)!);
                 return (false, default);
             },
             cancellationToken);
@@ -199,7 +207,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
             LogDebug("Cache hit for key: {Key}", key);
             _circuitBreaker.RecordSuccess();
 
-            return CacheSerializer.Deserialize<T>(cachedBytes);
+            return _serializer.Deserialize<T>(cachedBytes);
         }
         catch (Exception ex)
         {
@@ -336,7 +344,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
                     if (data is { Length: > 0 })
                     {
                         _metrics.RecordHit(key, 0);
-                        result[key] = CacheSerializer.Deserialize<T>(data);
+                        result[key] = _serializer.Deserialize<T>(data);
                     }
                     else
                     {
@@ -381,7 +389,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
             {
                 var tasks = chunk.Select(kvp =>
                 {
-                    var bytes = CacheSerializer.Serialize(kvp.Value);
+                    var bytes = _serializer.Serialize(kvp.Value);
                     return _cache.SetAsync(kvp.Key, bytes, options, cancellationToken);
                 }).ToArray();
 
@@ -408,7 +416,7 @@ public class RedisCacheService : ICacheServiceWithEntryOptions
             if (value is null || EqualityComparer<T>.Default.Equals(value, default))
                 return false;
 
-            var bytes = CacheSerializer.Serialize(value);
+            var bytes = _serializer.Serialize(value);
             var options = new DistributedCacheEntryOptions
             {
                 AbsoluteExpirationRelativeToNow = expiration ?? TimeSpan.FromMinutes(_config.DefaultExpirationMinutes)

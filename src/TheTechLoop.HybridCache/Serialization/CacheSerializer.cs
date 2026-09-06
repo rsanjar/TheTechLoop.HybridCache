@@ -3,9 +3,9 @@ using System.Text.Json;
 namespace TheTechLoop.HybridCache.Serialization;
 
 /// <summary>
-/// Centralized byte-oriented cache serialization.
-/// Eliminates transient string allocations on hot paths by going
-/// directly between <typeparamref name="T"/> and <c>byte[]</c>.
+/// Legacy static byte serializer with fixed defaults, retained for compatibility.
+/// Cache services use the DI-registered ICacheSerializer instead; configuring it does not
+/// change these static helpers. Both paths avoid intermediate JSON string allocations.
 /// </summary>
 public static class CacheSerializer
 {
